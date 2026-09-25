@@ -1,11 +1,10 @@
-void kernel_setup(void) {
-    volatile char *vga_buffer = (volatile char*) 0xB8000;
-    vga_buffer[0] = 'O';
-    vga_buffer[1] = 0x07;
-    vga_buffer[2] = 'S';
-    vga_buffer[3] = 0x07;
+#include <stdint.h>
+#include "header/cpu/gdt.h"
+#include "header/kernel-entrypoint.h"
 
-    while (1) {
-        asm volatile("hlt");
-    }
+void kernel_setup(void) {
+    uint32_t a;
+    uint32_t volatile b = 0x0000BABE;
+    __asm__("mov $0xCAFE0000, %0" : "=r"(a));
+    while (1) b += 1;
 }
