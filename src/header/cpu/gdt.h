@@ -26,16 +26,19 @@ extern struct GDTR _gdt_gdtr;
  * @param non_system   1-bit contain system
  */
 struct SegmentDescriptor {
-    // First 32-bit
     uint16_t segment_low;
     uint16_t base_low;
-
-    // Next 16-bit (Bit 32 to 47)
     uint8_t base_mid;
     uint8_t type_bit   : 4;
     uint8_t non_system : 1;
-    // TODO : Continue SegmentDescriptor definition
-
+    uint8_t privilege : 2;
+    uint8_t present : 1;
+    uint8_t limit_high : 4;
+    uint8_t available : 1;
+    uint8_t long_mode : 1;
+    uint8_t operation_size : 1;
+    uint8_t granularity : 1;
+    uint8_t base_high : 8;
 } __attribute__((packed));
 
 /**
