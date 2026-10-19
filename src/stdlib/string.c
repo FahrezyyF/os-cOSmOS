@@ -43,3 +43,67 @@ void *memmove(void *dest, const void *src, size_t n) {
 
     return dest;
 }
+
+size_t strlen(const char *s) {
+    size_t n = 0;
+    while (s[n] != '\0')
+        n++;
+    return n;
+}
+
+size_t strnlen(const char *s, size_t maxlen) {
+    size_t n = 0;
+    while (n < maxlen && s[n] != '\0')
+        n++;
+    return n;
+}
+
+int strcmp(const char *s1, const char *s2) {
+    const uint8_t *a = (const uint8_t*) s1;
+    const uint8_t *b = (const uint8_t*) s2;
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
+    return (int) *a - (int) *b;
+}
+
+int strncmp(const char *s1, const char *s2, size_t n) {
+    const uint8_t *a = (const uint8_t*) s1;
+    const uint8_t *b = (const uint8_t*) s2;
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] != b[i] || a[i] == '\0')
+            return (int) a[i] - (int) b[i];
+    }
+    return 0;
+}
+
+char *strchr(const char *s, int c) {
+    char target = (char) c;
+    for (;; s++) {
+        if (*s == target)
+            return (char*) s;
+        if (*s == '\0')
+            return NULL;
+    }
+}
+
+char *strrchr(const char *s, int c) {
+    char target = (char) c;
+    const char *last = NULL;
+    for (;; s++) {
+        if (*s == target)
+            last = s;
+        if (*s == '\0')
+            return (char*) last;
+    }
+}
+
+char *strncpy(char *restrict dest, const char *restrict src, size_t n) {
+    size_t i = 0;
+    for (; i < n && src[i] != '\0'; i++)
+        dest[i] = src[i];
+    for (; i < n; i++)
+        dest[i] = '\0';
+    return dest;
+}
