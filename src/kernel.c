@@ -58,7 +58,7 @@ void kernel_setup(void) {
     vfs_mount_all(boot_log);
     splash_step("File systems mounted - welcome aboard!", 100);
     speaker_play_startup_chime();
-    splash_end(500);
+    splash_end(1200);
 
     monitor_run();
 }

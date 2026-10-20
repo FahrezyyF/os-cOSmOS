@@ -49,6 +49,8 @@ static void graphics_splash(void) {
         graphics_fill_rect(0, y, w, 1, graphics_blend(RGB(5, 6, 28), RGB(55, 18, 80), (uint8_t) (y * 255 / h)));
     for (int i = 0; i < 260; i++) {
         int x = (int) (next_random() % (uint32_t) w), y = (int) (next_random() % (uint32_t) h);
+        if ((y > 410 && y < 580) || (y > 595 && y < 660))
+            continue; // keep the title, subtitle and progress bar free of stars
         uint8_t level = (uint8_t) (120 + next_random() % 136);
         int size = (next_random() % 9 == 0) ? 2 : 1;
         graphics_fill_rect(x, y, size, size, RGB(level, level, (level + 30) > 255 ? 255 : level + 30));
