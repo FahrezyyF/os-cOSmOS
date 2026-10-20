@@ -17,7 +17,7 @@
 
 | Anggota (GitHub) | Nama | NIM |
 | --- | --- | --- |
-| [@FahrezyyF](https://github.com/FahrezyyF) | _diisi_ | 13525072 |
+| [@FahrezyyF](https://github.com/FahrezyyF) | Fahrezy Fitriansyah | 13525072 |
 | [@TheProfessorDuck](https://github.com/TheProfessorDuck) | Christian Immanuel | 13525116 |
 | [@ZelosoleZW](https://github.com/ZelosoleZW) | Denzel Santoso | 13525014 |
 | [@i-jer](https://github.com/i-jer) | Jeremy Gerald Sutanto | 13525104 |
