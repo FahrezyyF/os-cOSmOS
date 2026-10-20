@@ -130,6 +130,17 @@ struct InterruptFrame {
 // Activate PIC mask for keyboard only
 void activate_keyboard_interrupt(void);
 
+/**
+ * Allow an IRQ line to reach the CPU (clear its PIC mask bit).
+ * IRQ 8-15 also unmask IRQ2 on the master PIC, which carries the slave cascade.
+ *
+ * @param irq IRQ number 0-15
+ */
+void pic_unmask_irq(uint8_t irq);
+
+// Block an IRQ line (set its PIC mask bit) - @param irq IRQ number 0-15
+void pic_mask_irq(uint8_t irq);
+
 // I/O port wait, around 1-4 microsecond, for I/O synchronization purpose
 void io_wait(void);
 
