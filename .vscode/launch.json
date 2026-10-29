@@ -8,7 +8,7 @@
             "program": "${workspaceRoot}/bin/kernel",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/bin",
             "environment": [],
             "externalConsole": false,
             "MIMode": "gdb",
@@ -30,6 +30,10 @@
                 {
                     "text": "symbol-file kernel",
                     "description": "Get kernel symbols"
+                },
+                {
+                    "text": "add-symbol-file shell_elf",
+                    "description": "Get shell symbols"
                 },
                 {
                     "text": "set output-radix 16",

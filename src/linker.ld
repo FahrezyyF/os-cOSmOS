@@ -1,31 +1,45 @@
-ENTRY(loader)                           /* the name of the entry label */
+ENTRY(loader)                /* the name of the entry label */
 
+/* Relocation address 0xC0100000, but load address (physical location) 0x100000 */
 SECTIONS {
-    . = 0x00100000;                     /* the code should be loaded at 1 MB */
-    
-    .multiboot ALIGN (0x1000) :         /* align at 4 KB */
-    {
-        *(.multiboot)                   /* GRUB multiboot header */
+    . = 0xC0100000;          /* use relocation address at 0xC0100000 */
+
+    /* Linker variable that can be used in kernel */
+    _linker_kernel_virtual_addr_start  = .;
+    _linker_kernel_physical_addr_start = . - 0xC0000000;
+
+    .multiboot ALIGN (0x1000) : AT (ADDR (.multiboot) - 0xC0000000) {
+        *(.multiboot)        /* put GRUB multiboot header at front */
     }
 
-    .text ALIGN (0x1000) :              /* align at 4 KB */
-    {
-        *(.text)                        /* all text sections from all files */
-    }
-    
-    .rodata ALIGN (0x1000) :            /* align at 4 KB */
-    {
-        *(.rodata*)                     /* all read-only data sections from all files */
+    .setup.text ALIGN (0x1000) : AT (ADDR (.setup.text) - 0xC0000000) {
+        *(.setup.text)       /* initial setup code */
     }
 
-    .data ALIGN (0x1000) :              /* align at 4 KB */
-    {
-        *(.data)                        /* all data sections from all files */
+    .text ALIGN (0x1000) : AT (ADDR (.text) - 0xC0000000) {
+        *(.text)             /* all text sections from all files */
     }
 
-    .bss ALIGN (0x1000) :               /* align at 4 KB */
-    {
-        *(COMMON)                       /* all COMMON sections from all files */
-        *(.bss)                         /* all bss sections from all files */
+    .rodata ALIGN (0x1000) : AT (ADDR (.rodata) - 0xC0000000) {
+        *(.rodata*)          /* all read-only data sections from all files */
     }
+
+    .data ALIGN (0x1000) : AT (ADDR (.data) - 0xC0000000) {
+        *(.data)             /* all data sections from all files */
+    }
+
+    .bss ALIGN (0x1000) : AT (ADDR (.bss) - 0xC0000000) {
+        *(COMMON)            /* all COMMON sections from all files */
+        /* all bss sections, except the kernel stack which goes last (book: bin/kernel-entrypoint.o) */
+        *(EXCLUDE_FILE (*kernel-entrypoint.s.o) .bss)
+        *kernel-entrypoint.s.o(.bss)
+        _linker_kernel_stack_top = .;
+    }
+
+    /* Linker variable that can be used in kernel */
+    _linker_kernel_virtual_addr_end  = .;
+    _linker_kernel_physical_addr_end = . - 0xC0000000;
+
+    /* The boot page table (kernel-entrypoint.s) only maps the first 4 MiB of physical memory */
+    ASSERT ((_linker_kernel_physical_addr_end <= 0x400000), "Error: kernel image is larger than 4 MiB")
 }

@@ -2,6 +2,7 @@
 #include "header/cpu/portio.h"
 #include "header/driver/pci.h"
 #include "header/text/font.h"
+#include "header/memory/paging.h"
 
 const uint32_t graphics_vga_palette[16] = {
     RGB(0x00, 0x00, 0x00), RGB(0x00, 0x00, 0xAA), RGB(0x00, 0xAA, 0x00), RGB(0x00, 0xAA, 0xAA),
@@ -10,7 +11,8 @@ const uint32_t graphics_vga_palette[16] = {
     RGB(0xFF, 0x55, 0x55), RGB(0xFF, 0x55, 0xFF), RGB(0xFF, 0xFF, 0x55), RGB(0xFF, 0xFF, 0xFF),
 };
 
-static volatile uint32_t *lfb      = 0;
+static volatile uint32_t *lfb      = 0; // kernel virtual address (KERNEL_LFB_BASE)
+static uint32_t          lfb_phys = 0; // PCI BAR0
 static uint16_t          screen_w  = 0;
 static uint16_t          screen_h  = 0;
 static uint16_t          bga_id    = 0;
@@ -71,6 +73,10 @@ bool graphics_init(uint16_t width, uint16_t height) {
         return false;
 
     uint32_t lfb_address = find_lfb_address();
+    uint32_t lfb_size    = (uint32_t) width * height * (GRAPHICS_BPP / 8);
+    // With paging on, the linear framebuffer must be mapped into kernel space first
+    if (lfb_size > KERNEL_LFB_MAX_SIZE || !paging_map_kernel_physical(KERNEL_LFB_BASE, lfb_address, lfb_size))
+        return false;
 
     bga_write(BGA_REG_ENABLE, BGA_DISABLED);
     bga_write(BGA_REG_XRES, width);
@@ -87,7 +93,8 @@ bool graphics_init(uint16_t width, uint16_t height) {
         return false;
     }
 
-    lfb      = (volatile uint32_t*) lfb_address;
+    lfb      = (volatile uint32_t*) KERNEL_LFB_BASE;
+    lfb_phys = lfb_address;
     screen_w = width;
     screen_h = height;
     active   = true;
@@ -112,7 +119,7 @@ uint16_t graphics_get_bga_version(void) {
 }
 
 uint32_t graphics_get_lfb_address(void) {
-    return (uint32_t) lfb;
+    return lfb_phys;
 }
 
 void graphics_put_pixel(int x, int y, uint32_t rgb) {

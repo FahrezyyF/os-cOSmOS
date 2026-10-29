@@ -7,6 +7,7 @@
             "command": "make",
             "args": [
                 "build",
+                "insert-shell",
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -19,7 +20,7 @@
         {
             "type": "shell",
             "label": "Launch QEMU",
-            "command": "echo Starting QEMU&(test -f storage.bin || qemu-img create -f raw storage.bin 4M)&&(test -f cosmo.bin || qemu-img create -f raw cosmo.bin 4M)&&qemu-system-i386 -s -S -vga std -drive file=storage.bin,format=raw,if=ide,index=0,media=disk -drive file=cosmo.bin,format=raw,if=ide,index=1,media=disk -cdrom OS2025.iso",
+            "command": "echo Starting QEMU&qemu-system-i386 -s -S -m 128M -vga std -drive file=storage.bin,format=raw,if=ide,index=0,media=disk -drive file=cosmo.bin,format=raw,if=ide,index=1,media=disk -cdrom OS2025.iso -serial file:serial.log",
             "isBackground": true,
             "dependsOn": "Build OS",
             "options": {

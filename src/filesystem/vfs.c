@@ -1,17 +1,20 @@
+#include <stdarg.h>
 #include "header/filesystem/vfs.h"
 #include "header/filesystem/ext2.h"
 #include "header/filesystem/cosmofs.h"
 #include "header/driver/disk.h"
 #include "header/driver/rtc.h"
+#include "header/memory/swap.h"
+#include "header/memory/kheap.h"
 #include "header/stdlib/string.h"
 #include "header/stdlib/format.h"
-#include <stdarg.h>
 
-static bool           mounted[VFS_COUNT];
+static bool           mounted = false;
+static enum VFSKind   root_kind = VFS_EXT2;
+static uint8_t        root_drive = ATA_DRIVE_MASTER;
 static struct CosmoFS cosmo;
-static uint8_t        dir_buffer[128 * BLOCK_SIZE]; // EXT2 read_directory() scratch (64 KiB)
 
-/* -- ATA slave as a CosmoFS block device -- */
+/* -- ATA slave (cosmo.bin) as a CosmoFS block device -- */
 
 static bool slave_read(void *ctx, uint32_t lba, uint32_t count, void *buf) {
     (void) ctx;
@@ -58,318 +61,344 @@ static void log_line(void (*log)(const char*), const char *fmt, ...) {
     log(line);
 }
 
-void vfs_mount_all(void (*log)(const char *line)) {
-    struct ATADriveInfo master, slave;
-    ata_identify(ATA_DRIVE_MASTER, &master);
-    ata_identify(ATA_DRIVE_SLAVE, &slave);
+bool vfs_mount_root(enum VFSKind kind, void (*log)(const char *line)) {
+    root_kind  = kind;
+    root_drive = kind == VFS_EXT2 ? ATA_DRIVE_MASTER : ATA_DRIVE_SLAVE;
+    const char *image = kind == VFS_EXT2 ? "storage.bin" : "cosmo.bin";
+    struct ATADriveInfo info;
+    ata_identify(root_drive, &info);
+    if (!info.present) {
+        log_line(log, "%s is not attached: no root file system", image);
+        mounted = false;
+        return false;
+    }
 
-    if (master.present) {
+    if (kind == VFS_EXT2) {
         ext2_set_time_source(rtc_unix_time);
         bool fresh = is_empty_storage();
         initialize_filesystem_ext2();
         ata_flush(ATA_DRIVE_MASTER);
-        mounted[VFS_EXT2] = true;
-        log_line(log, "storage.bin: %u KiB, EXT2 %s", master.sector_count / 2,
-                 fresh ? "(blank disk, formatted)" : "(mounted existing volume)");
+        mounted = true;
+        log_line(log, "root: EXT2 on %s (%s)", image, fresh ? "blank disk, formatted" : "mounted");
     } else {
-        log_line(log, "storage.bin: not attached - EXT2 unavailable");
-    }
-
-    if (slave.present) {
         struct CosmoFSDevice dev = {
-            .context = NULL, .block_count = slave.sector_count,
-            .read = slave_read, .write = slave_write, .flush = slave_flush,
+            .context     = NULL,
+            .block_count = info.sector_count < VFS_FS_REGION_BLOCKS ? info.sector_count : VFS_FS_REGION_BLOCKS,
+            .read        = slave_read,
+            .write       = slave_write,
+            .flush       = slave_flush,
         };
         int8_t ret = cosmofs_mount(&cosmo, &dev, rtc_unix_time);
-        const char *how = "mounted existing volume";
+        const char *how = cosmo.replayed_transactions > 0 ? "mounted, journal replayed" : "mounted";
         if (ret == 1) {
             how = "blank disk, formatted";
             if (cosmofs_format(&dev, "cosmos", rtc_unix_time))
                 ret = cosmofs_mount(&cosmo, &dev, rtc_unix_time);
         }
-        mounted[VFS_COSMOFS] = ret == 0;
-        if (ret == 0 && cosmo.replayed_transactions > 0)
-            how = "mounted, journal replayed";
-        log_line(log, "cosmo.bin  : %u KiB, CosmoFS (%s)", slave.sector_count / 2,
-                 ret == 0 ? how : "mount FAILED, corrupted volume");
-    } else {
-        log_line(log, "cosmo.bin  : not attached - CosmoFS unavailable");
+        mounted = ret == 0;
+        log_line(log, "root: CosmoFS on %s (%s)", image, mounted ? how : "mount FAILED, corrupted volume");
     }
+
+    // Swap partition: everything after the 4 MiB file system region
+    if (info.sector_count >= VFS_FS_REGION_BLOCKS + SWAP_SECTORS_PER_PAGE) {
+        uint32_t slots = (info.sector_count - VFS_FS_REGION_BLOCKS) / SWAP_SECTORS_PER_PAGE;
+        swap_init(root_drive, VFS_FS_REGION_BLOCKS, slots);
+        log_line(log, "swap: %u KiB partition on %s", (slots > PAGE_FRAME_ON_SWAP_MAX_COUNT ? PAGE_FRAME_ON_SWAP_MAX_COUNT : slots) * 4, image);
+    } else {
+        swap_init(root_drive, 0, 0);
+        log_line(log, "swap: disabled (%s has no swap partition, run `make disk`)", image);
+    }
+    return mounted;
 }
 
-bool vfs_available(enum VFSKind kind) {
-    return kind < VFS_COUNT && mounted[kind];
+bool vfs_ready(void) {
+    return mounted;
 }
 
-const char *vfs_name(enum VFSKind kind) {
-    return kind == VFS_EXT2 ? "ext2" : "cosmo";
+enum VFSKind vfs_kind(void) {
+    return root_kind;
 }
 
-uint32_t vfs_root(enum VFSKind kind) {
-    return kind == VFS_EXT2 ? EXT2_ROOT_INODE : COSMOFS_ROOT_NODE;
+const char *vfs_name(void) {
+    return root_kind == VFS_EXT2 ? "ext2" : "cosmo";
 }
 
-static void copy_name(struct VFSEntry *e, const char *name, uint8_t len) {
-    memcpy(e->name, name, len);
-    e->name[len] = '\0';
-    e->name_len  = len;
+uint32_t vfs_root(void) {
+    return root_kind == VFS_EXT2 ? EXT2_ROOT_INODE : COSMOFS_ROOT_NODE;
 }
 
-int8_t vfs_lookup(enum VFSKind kind, uint32_t dir, const char *name, uint8_t len, struct VFSEntry *out) {
-    if (!vfs_available(kind))
+uint8_t vfs_drive(void) {
+    return root_drive;
+}
+
+/* ================================ CRUD ============================================= */
+
+static struct CosmoFSRequest to_cosmo(const struct EXT2DriverRequest *r) {
+    struct CosmoFSRequest c = {
+        .buf          = r->buf,
+        .name         = r->name,
+        .name_len     = r->name_len,
+        .parent       = r->parent_inode,
+        .buffer_size  = r->buffer_size,
+        .is_directory = r->is_directory,
+    };
+    return c;
+}
+
+int8_t vfs_read(struct EXT2DriverRequest request) {
+    if (!mounted)
+        return -1;
+    if (root_kind == VFS_EXT2)
+        return read(request);
+    struct CosmoFSRequest c = to_cosmo(&request);
+    return cosmofs_read(&cosmo, &c);
+}
+
+/**
+ * CosmoFS listing -> EXT2 directory blocks, so read_directory() has one format.
+ * Same contract as the EXT2 driver: buffer too small -> -1 and buffer_size = bytes needed.
+ */
+static int8_t cosmo_read_directory(struct EXT2DriverRequest *request) {
+    struct CosmoFSRequest probe = to_cosmo(request);
+    probe.buf = NULL;
+    probe.buffer_size = 0;
+    int8_t ret = cosmofs_read_directory(&cosmo, &probe);
+    if (ret != -1)
+        return ret; // 1 not a folder, 2 not found, 3 invalid parent
+    uint32_t bytes = probe.buffer_size;
+    struct CosmoFSDirEntry *entries = (struct CosmoFSDirEntry*) kmalloc(bytes);
+    if (entries == NULL)
+        return -1;
+    struct CosmoFSRequest list = to_cosmo(request);
+    list.buf = entries;
+    list.buffer_size = bytes;
+    if (cosmofs_read_directory(&cosmo, &list) != 0) {
+        kfree(entries);
+        return -1;
+    }
+    uint32_t count = list.buffer_size / sizeof(struct CosmoFSDirEntry);
+
+    // Pass 1: size of the packed table
+    uint32_t blocks = 1, offset = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint16_t rec = get_entry_record_len(entries[i].name_len);
+        if (offset + rec > BLOCK_SIZE) {
+            blocks++;
+            offset = 0;
+        }
+        offset += rec;
+    }
+    if (request->buf == NULL || request->buffer_size < blocks * BLOCK_SIZE) {
+        request->buffer_size = blocks * BLOCK_SIZE;
+        kfree(entries);
+        return -1;
+    }
+
+    // Pass 2: build each block in kernel memory, then copy it out
+    struct BlockBuffer block;
+    uint8_t *out = (uint8_t*) request->buf;
+    uint32_t block_index = 0, last = 0;
+    offset = 0;
+    memset(&block, 0, sizeof(block));
+    for (uint32_t i = 0; i <= count; i++) {
+        uint16_t rec = i < count ? get_entry_record_len(entries[i].name_len) : 0;
+        if (i == count || offset + rec > BLOCK_SIZE) {
+            // close the block: the last record extends to the end of the block
+            struct EXT2DirectoryEntry *tail = get_directory_entry(block.buf, last);
+            tail->rec_len = (uint16_t) (BLOCK_SIZE - last);
+            memcpy(out + block_index * BLOCK_SIZE, block.buf, BLOCK_SIZE);
+            block_index++;
+            memset(&block, 0, sizeof(block));
+            offset = 0;
+            if (i == count)
+                break;
+        }
+        struct EXT2DirectoryEntry *e = get_directory_entry(block.buf, offset);
+        e->inode     = entries[i].node;
+        e->rec_len   = rec;
+        e->name_len  = entries[i].name_len;
+        e->file_type = entries[i].type == COSMOFS_TYPE_DIR ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+        memcpy(get_entry_name(e), entries[i].name, entries[i].name_len);
+        last    = offset;
+        offset += rec;
+    }
+    memset(out + block_index * BLOCK_SIZE, 0, request->buffer_size - block_index * BLOCK_SIZE);
+    kfree(entries);
+    return 0;
+}
+
+int8_t vfs_read_directory(struct EXT2DriverRequest *request) {
+    if (!mounted || request == NULL)
+        return -1;
+    if (root_kind == VFS_EXT2)
+        return read_directory(request);
+    return cosmo_read_directory(request);
+}
+
+int8_t vfs_write(struct EXT2DriverRequest *request) {
+    if (!mounted || request == NULL)
+        return -1;
+    if (root_kind == VFS_EXT2) {
+        int8_t ret = write(request);
+        ata_flush(ATA_DRIVE_MASTER);
+        return ret;
+    }
+    struct CosmoFSRequest c = to_cosmo(request);
+    return cosmofs_write(&cosmo, &c);
+}
+
+int8_t vfs_delete(struct EXT2DriverRequest request) {
+    if (!mounted)
+        return -1;
+    if (root_kind == VFS_EXT2) {
+        int8_t ret = delete(request);
+        ata_flush(ATA_DRIVE_MASTER);
+        return ret;
+    }
+    struct CosmoFSRequest c = to_cosmo(&request);
+    return cosmofs_delete(&cosmo, &c);
+}
+
+/* ================================ EXTENSIONS ======================================= */
+
+int8_t vfs_rename(uint32_t parent, const char *name, uint8_t name_len,
+                  uint32_t new_parent, const char *new_name, uint8_t new_name_len) {
+    if (!mounted)
+        return -1;
+    if (root_kind == VFS_EXT2) {
+        int8_t ret = ext2_rename(parent, name, name_len, new_parent, new_name, new_name_len);
+        ata_flush(ATA_DRIVE_MASTER);
+        return ret;
+    }
+    return cosmofs_rename(&cosmo, parent, name, name_len, new_parent, new_name, new_name_len);
+}
+
+int8_t vfs_stat(struct SyscallStat *stat) {
+    if (!mounted)
         return 2;
-    if (kind == VFS_EXT2) {
+    if (root_kind == VFS_EXT2) {
         uint32_t inode;
-        uint8_t  type;
-        int8_t ret = ext2_lookup(dir, name, len, &inode, &type);
+        uint8_t type;
+        int8_t ret = ext2_lookup(stat->parent, stat->name, stat->name_len, &inode, &type);
         if (ret != 0)
             return ret;
         struct EXT2Inode node;
         ext2_get_inode(inode, &node);
-        out->id   = inode;
-        out->size = node.i_size;
-        out->type = type == EXT2_FT_DIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-        copy_name(out, name, len);
+        stat->inode   = inode;
+        stat->type    = type == EXT2_FT_DIR ? SYSCALL_TYPE_DIR : SYSCALL_TYPE_FILE;
+        stat->size    = node.i_size;
+        stat->blocks  = node.i_blocks;
+        stat->extents = 0;
+        stat->links   = node.i_links_count;
+        stat->ctime   = node.i_ctime;
+        stat->mtime   = node.i_mtime;
         return 0;
     }
     struct CosmoFSStat st;
-    int8_t ret = cosmofs_lookup(&cosmo, dir, name, len, &st);
+    int8_t ret = cosmofs_lookup(&cosmo, stat->parent, stat->name, stat->name_len, &st);
     if (ret != 0)
         return ret;
-    out->id   = st.node;
-    out->size = st.size;
-    out->type = st.type == COSMOFS_TYPE_DIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-    copy_name(out, name, len);
+    stat->inode   = st.node;
+    stat->type    = st.type == COSMOFS_TYPE_DIR ? SYSCALL_TYPE_DIR : SYSCALL_TYPE_FILE;
+    stat->size    = st.size;
+    stat->blocks  = st.block_count;
+    stat->extents = st.extent_count;
+    stat->links   = 1;
+    stat->ctime   = st.ctime;
+    stat->mtime   = st.mtime;
     return 0;
 }
 
-bool vfs_stat(enum VFSKind kind, uint32_t id, struct VFSStat *out) {
-    memset(out, 0, sizeof(*out));
-    if (!vfs_available(kind))
-        return false;
-    if (kind == VFS_EXT2) {
-        struct EXT2Inode node;
-        if (!ext2_get_inode(id, &node))
-            return false;
-        out->id     = id;
-        out->type   = (node.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-        out->size   = node.i_size;
-        out->blocks = node.i_blocks;
-        out->links  = node.i_links_count;
-        out->ctime  = node.i_ctime;
-        out->mtime  = node.i_mtime;
-        char name[EXT2_NAME_MAX + 1];
-        ext2_get_name(id, &out->parent, name);
-        return true;
-    }
-    struct CosmoFSStat st;
-    if (!cosmofs_stat(&cosmo, id, &st))
-        return false;
-    out->id      = id;
-    out->parent  = st.parent;
-    out->type    = st.type == COSMOFS_TYPE_DIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-    out->size    = st.size;
-    out->blocks  = st.block_count;
-    out->extents = st.extent_count;
-    out->ctime   = st.ctime;
-    out->mtime   = st.mtime;
-    return true;
-}
-
-int32_t vfs_list(enum VFSKind kind, uint32_t dir, struct VFSEntry *out, uint32_t max) {
-    if (!vfs_available(kind))
-        return -13;
-    uint32_t count = 0;
-    if (kind == VFS_EXT2) {
-        struct EXT2DriverRequest req = {
-            .buf = dir_buffer, .name = ".", .name_len = 1, .parent_inode = dir, .buffer_size = sizeof(dir_buffer),
-        };
-        int8_t ret = read_directory(&req);
-        if (ret != 0)
-            return ret - 10;
-        for (uint32_t block = 0; block < sizeof(dir_buffer) / BLOCK_SIZE; block++) {
-            uint8_t *b = dir_buffer + block * BLOCK_SIZE;
-            if (get_directory_entry(b, 0)->rec_len == 0)
-                break;
-            for (uint32_t off = 0; off + 8 <= BLOCK_SIZE;) {
-                struct EXT2DirectoryEntry *e = get_directory_entry(b, off);
-                if (e->rec_len == 0)
-                    break;
-                if (e->inode != 0 && count < max) {
-                    uint8_t len = e->name_len;
-                    while (len > 0 && get_entry_name(e)[len - 1] == '\0')
-                        len--;
-                    struct EXT2Inode node;
-                    ext2_get_inode(e->inode, &node);
-                    out[count].id   = e->inode;
-                    out[count].size = node.i_size;
-                    out[count].type = (node.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-                    copy_name(&out[count], get_entry_name(e), len);
-                    count++;
-                }
-                off += e->rec_len;
-            }
-        }
-        return (int32_t) count;
-    }
-
-    static struct CosmoFSDirEntry entries[300];
-    struct CosmoFSRequest req = {.buf = entries, .name = ".", .name_len = 1, .parent = dir, .buffer_size = sizeof(entries)};
-    int8_t ret = cosmofs_read_directory(&cosmo, &req);
-    if (ret != 0)
-        return ret - 10;
-    uint32_t n = req.buffer_size / sizeof(struct CosmoFSDirEntry);
-    for (uint32_t i = 0; i < n && count < max; i++, count++) {
-        out[count].id   = entries[i].node;
-        out[count].size = entries[i].size;
-        out[count].type = entries[i].type == COSMOFS_TYPE_DIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-        copy_name(&out[count], entries[i].name, entries[i].name_len);
-    }
-    return (int32_t) count;
-}
-
-int8_t vfs_read(enum VFSKind kind, uint32_t dir, const char *name, uint8_t len, void *buf, uint32_t buf_size) {
-    if (!vfs_available(kind))
-        return -1;
-    if (kind == VFS_EXT2) {
-        struct EXT2DriverRequest req = {
-            .buf = buf, .name = (char*) name, .name_len = len, .parent_inode = dir, .buffer_size = buf_size,
-        };
-        return read(req);
-    }
-    struct CosmoFSRequest req = {.buf = buf, .name = name, .name_len = len, .parent = dir, .buffer_size = buf_size};
-    return cosmofs_read(&cosmo, &req);
-}
-
-int8_t vfs_write(enum VFSKind kind, uint32_t dir, const char *name, uint8_t len, const void *buf, uint32_t size, bool is_dir) {
-    if (!vfs_available(kind))
-        return -1;
-    if (kind == VFS_EXT2) {
-        struct EXT2DriverRequest req = {
-            .buf = (void*) buf, .name = (char*) name, .name_len = len, .parent_inode = dir,
-            .buffer_size = size, .is_directory = is_dir,
-        };
-        int8_t ret = write(&req);
-        ata_flush(ATA_DRIVE_MASTER);
-        return ret;
-    }
-    struct CosmoFSRequest req = {.buf = (void*) buf, .name = name, .name_len = len, .parent = dir,
-                                 .buffer_size = size, .is_directory = is_dir};
-    return cosmofs_write(&cosmo, &req);
-}
-
-int8_t vfs_delete(enum VFSKind kind, uint32_t dir, const char *name, uint8_t len) {
-    if (!vfs_available(kind))
-        return -1;
-    if (kind == VFS_EXT2) {
-        struct EXT2DriverRequest req = {.name = (char*) name, .name_len = len, .parent_inode = dir};
-        int8_t ret = delete(req);
-        ata_flush(ATA_DRIVE_MASTER);
-        return ret;
-    }
-    struct CosmoFSRequest req = {.name = name, .name_len = len, .parent = dir};
-    return cosmofs_delete(&cosmo, &req);
-}
-
-int8_t vfs_rename(enum VFSKind kind, uint32_t dir, const char *name, uint8_t len,
-                  uint32_t new_dir, const char *new_name, uint8_t new_len) {
-    if (!vfs_available(kind))
-        return -1;
-    if (kind == VFS_EXT2) {
-        int8_t ret = ext2_rename(dir, name, len, new_dir, new_name, new_len);
-        ata_flush(ATA_DRIVE_MASTER);
-        return ret;
-    }
-    return cosmofs_rename(&cosmo, dir, name, len, new_dir, new_name, new_len);
-}
-
-uint32_t vfs_find(enum VFSKind kind, const char *name, uint8_t len, struct VFSFindHit *hits, uint32_t max) {
-    if (!vfs_available(kind))
+uint32_t vfs_find(const char *name, uint8_t name_len, struct SyscallFindHit *hits, uint32_t max_hits) {
+    if (!mounted)
         return 0;
-    if (kind == VFS_EXT2) {
-        static struct EXT2FindResult results[64];
-        uint32_t total = ext2_find(name, len, results, 64);
-        for (uint32_t i = 0; i < total && i < max && i < 64; i++) {
-            hits[i].id     = results[i].inode;
+    if (root_kind == VFS_EXT2) {
+        struct EXT2FindResult *results = kmalloc((max_hits ? max_hits : 1) * sizeof(*results));
+        if (results == NULL)
+            return 0;
+        uint32_t total = ext2_find(name, name_len, results, max_hits);
+        for (uint32_t i = 0; i < total && i < max_hits; i++) {
+            hits[i].inode  = results[i].inode;
             hits[i].parent = results[i].parent_inode;
-            hits[i].type   = results[i].file_type == EXT2_FT_DIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+            hits[i].type   = results[i].file_type == EXT2_FT_DIR ? SYSCALL_TYPE_DIR : SYSCALL_TYPE_FILE;
         }
+        kfree(results);
         return total;
     }
-    static struct CosmoFSFindResult results[64];
-    uint32_t total = cosmofs_find(&cosmo, name, len, results, 64);
-    for (uint32_t i = 0; i < total && i < max && i < 64; i++) {
-        hits[i].id     = results[i].node;
+    struct CosmoFSFindResult *results = kmalloc((max_hits ? max_hits : 1) * sizeof(*results));
+    if (results == NULL)
+        return 0;
+    uint32_t total = cosmofs_find(&cosmo, name, name_len, results, max_hits);
+    for (uint32_t i = 0; i < total && i < max_hits; i++) {
+        hits[i].inode  = results[i].node;
         hits[i].parent = results[i].parent;
-        hits[i].type   = results[i].type == COSMOFS_TYPE_DIR ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+        hits[i].type   = results[i].type == COSMOFS_TYPE_DIR ? SYSCALL_TYPE_DIR : SYSCALL_TYPE_FILE;
     }
+    kfree(results);
     return total;
 }
 
-bool vfs_name_of(enum VFSKind kind, uint32_t id, uint32_t *parent, char *name_out) {
-    if (!vfs_available(kind) || id == vfs_root(kind))
+bool vfs_name_of(uint32_t inode, uint32_t *parent, char *name_out) {
+    if (!mounted || inode == vfs_root())
         return false;
-    if (kind == VFS_EXT2)
-        return ext2_get_name(id, parent, name_out);
+    if (root_kind == VFS_EXT2)
+        return ext2_get_name(inode, parent, name_out);
     struct CosmoFSStat st;
-    if (!cosmofs_stat(&cosmo, id, &st))
+    if (!cosmofs_stat(&cosmo, inode, &st))
         return false;
     *parent = st.parent;
     memcpy(name_out, st.name, sizeof(st.name));
     return true;
 }
 
-void vfs_stats(enum VFSKind kind, struct VFSStats *out) {
-    memset(out, 0, sizeof(*out));
-    out->fs_name    = kind == VFS_EXT2 ? "EXT2 (IF2130 Edition)" : "CosmoFS v1 (journaled)";
-    out->device     = kind == VFS_EXT2 ? "storage.bin (ATA master)" : "cosmo.bin (ATA slave)";
-    out->block_size = BLOCK_SIZE;
-    if (!vfs_available(kind))
+void vfs_info(struct SyscallFsInfo *info) {
+    memset(info, 0, sizeof(*info));
+    snprintf(info->fs_name, sizeof(info->fs_name), "%s", root_kind == VFS_EXT2 ? "EXT2 (IF2130 Edition)" : "CosmoFS v1 (journaled)");
+    snprintf(info->device, sizeof(info->device), "%s", root_kind == VFS_EXT2 ? "storage.bin (ATA master)" : "cosmo.bin (ATA slave)");
+    info->block_size = BLOCK_SIZE;
+    if (!mounted)
         return;
-    if (kind == VFS_EXT2) {
+    if (root_kind == VFS_EXT2) {
         struct EXT2Stats st;
         ext2_get_stats(&st);
-        out->total_blocks = st.blocks_count;
-        out->free_blocks  = st.free_blocks_count;
-        out->total_nodes  = st.inodes_count;
-        out->free_nodes   = st.free_inodes_count;
-        out->mount_count  = st.mount_count;
+        info->total_blocks = st.blocks_count;
+        info->free_blocks  = st.free_blocks_count;
+        info->total_nodes  = st.inodes_count;
+        info->free_nodes   = st.free_inodes_count;
+        info->mount_count  = st.mount_count;
         return;
     }
     struct CosmoFSStats st;
     cosmofs_get_stats(&cosmo, &st);
-    out->total_blocks     = st.total_blocks;
-    out->free_blocks      = st.free_blocks;
-    out->total_nodes      = st.node_count;
-    out->free_nodes       = st.free_nodes;
-    out->mount_count      = st.mount_count;
-    out->journal_sequence = st.journal_sequence;
-    out->replayed         = st.replayed_transactions;
+    info->total_blocks     = st.total_blocks;
+    info->free_blocks      = st.free_blocks;
+    info->total_nodes      = st.node_count;
+    info->free_nodes       = st.free_nodes;
+    info->mount_count      = st.mount_count;
+    info->journal_sequence = st.journal_sequence;
 }
 
-bool vfs_check(enum VFSKind kind, uint32_t *errors, char *message, uint32_t message_size) {
-    *errors = 0;
-    if (!vfs_available(kind)) {
-        snprintf(message, message_size, "volume not mounted");
-        return false;
+void vfs_check(struct SyscallFsCheck *result) {
+    memset(result, 0, sizeof(*result));
+    if (!mounted) {
+        snprintf(result->message, sizeof(result->message), "no root file system mounted");
+        return;
     }
-    if (kind == VFS_EXT2) {
+    if (root_kind == VFS_EXT2) {
         struct EXT2CheckReport r;
-        bool ok = ext2_check(&r);
-        *errors = r.errors;
-        if (ok)
-            snprintf(message, message_size, "clean: %u files, %u dirs, %u blocks in use", r.files, r.dirs, r.used_blocks);
+        result->clean  = ext2_check(&r);
+        result->errors = r.errors;
+        if (result->clean)
+            snprintf(result->message, sizeof(result->message), "clean: %u files, %u dirs, %u blocks in use", r.files, r.dirs, r.used_blocks);
         else
-            snprintf(message, message_size, "%s", r.message);
-        return ok;
+            snprintf(result->message, sizeof(result->message), "%s", r.message);
+        return;
     }
     struct CosmoFSCheckReport r;
-    bool ok = cosmofs_check(&cosmo, &r);
-    *errors = r.errors;
-    if (ok)
-        snprintf(message, message_size, "clean: %u files, %u dirs, %u extents, %u blocks in use",
-                 r.files, r.dirs, r.extents, r.used_blocks);
+    result->clean  = cosmofs_check(&cosmo, &r);
+    result->errors = r.errors;
+    if (result->clean)
+        snprintf(result->message, sizeof(result->message), "clean: %u files, %u dirs, %u extents, %u blocks in use", r.files, r.dirs, r.extents, r.used_blocks);
     else
-        snprintf(message, message_size, "%s", r.message);
-    return ok;
+        snprintf(result->message, sizeof(result->message), "%s", r.message);
 }

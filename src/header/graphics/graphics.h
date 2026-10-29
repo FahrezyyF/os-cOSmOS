@@ -58,7 +58,7 @@ bool     graphics_is_active(void);
 uint16_t graphics_get_width(void);
 uint16_t graphics_get_height(void);
 uint16_t graphics_get_bga_version(void);
-uint32_t graphics_get_lfb_address(void);
+uint32_t graphics_get_lfb_address(void); // physical address (PCI BAR0); mapped at KERNEL_LFB_BASE
 
 // Pixel primitives, all coordinates are clipped to the screen
 void     graphics_put_pixel(int x, int y, uint32_t rgb);
