@@ -1,5 +1,9 @@
 #include "header/driver/disk.h"
 #include "header/cpu/portio.h"
+#include "header/stdlib/string.h"
+
+// Kernel space starts here (header/memory/paging.h: KERNEL_VIRTUAL_ADDRESS_BASE)
+#define USER_SPACE_END 0xC0000000u
 
 // Upper bound for every polling loop so a missing / broken drive cannot hang the kernel
 #define ATA_TIMEOUT 2000000u
@@ -56,7 +60,46 @@ static bool ata_select(uint8_t drive, uint32_t logical_block_address, uint8_t bl
     return true;
 }
 
+/**
+ * Buffers in user space (system calls, program loading) are not always resident: touching one
+ * may page-fault, and the page fault handler may itself use the disk to swap. That must never
+ * happen between issuing an ATA command and finishing its data transfer, so user buffers are
+ * moved one sector at a time through this kernel bounce buffer, touched only between commands.
+ */
+static struct BlockBuffer bounce;
+
+static bool is_user_buffer(const void *ptr) {
+    return (uint32_t) ptr < USER_SPACE_END;
+}
+
+static bool ata_read_direct(uint8_t drive, void *ptr, uint32_t logical_block_address, uint8_t block_count);
+static bool ata_write_direct(uint8_t drive, const void *ptr, uint32_t logical_block_address, uint8_t block_count);
+
 bool ata_read(uint8_t drive, void *ptr, uint32_t logical_block_address, uint8_t block_count) {
+    if (!is_user_buffer(ptr))
+        return ata_read_direct(drive, ptr, logical_block_address, block_count);
+    uint8_t *target = (uint8_t*) ptr;
+    for (uint32_t i = 0; i < block_count; i++) {
+        if (!ata_read_direct(drive, &bounce, logical_block_address + i, 1))
+            return false;
+        memcpy(target + i * BLOCK_SIZE, &bounce, BLOCK_SIZE); // may page-fault: no command in flight
+    }
+    return true;
+}
+
+bool ata_write(uint8_t drive, const void *ptr, uint32_t logical_block_address, uint8_t block_count) {
+    if (!is_user_buffer(ptr))
+        return ata_write_direct(drive, ptr, logical_block_address, block_count);
+    const uint8_t *source = (const uint8_t*) ptr;
+    for (uint32_t i = 0; i < block_count; i++) {
+        memcpy(&bounce, source + i * BLOCK_SIZE, BLOCK_SIZE);
+        if (!ata_write_direct(drive, &bounce, logical_block_address + i, 1))
+            return false;
+    }
+    return true;
+}
+
+static bool ata_read_direct(uint8_t drive, void *ptr, uint32_t logical_block_address, uint8_t block_count) {
     if (block_count == 0) // ATA treats 0 as 256 sectors; callers never mean that
         return true;
     if (!ata_select(drive, logical_block_address, block_count))
@@ -75,7 +118,7 @@ bool ata_read(uint8_t drive, void *ptr, uint32_t logical_block_address, uint8_t 
     return true;
 }
 
-bool ata_write(uint8_t drive, const void *ptr, uint32_t logical_block_address, uint8_t block_count) {
+static bool ata_write_direct(uint8_t drive, const void *ptr, uint32_t logical_block_address, uint8_t block_count) {
     if (block_count == 0)
         return true;
     if (!ata_select(drive, logical_block_address, block_count))

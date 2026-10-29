@@ -1,0 +1,8 @@
+Mercury  rocky   0.39 AU  no moons
+Venus    rocky   0.72 AU  no moons
+Earth    rocky   1.00 AU  1 moon
+Mars     rocky   1.52 AU  2 moons
+Jupiter  gas     5.20 AU  95 moons
+Saturn   gas     9.58 AU  146 moons
+Uranus   ice    19.19 AU  28 moons
+Neptune  ice    30.07 AU  16 moons

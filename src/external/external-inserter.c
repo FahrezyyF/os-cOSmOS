@@ -2,10 +2,12 @@
 // Inserts files / folders into an EXT2 - IF2130 Edition image using the very same ext2.c as the
 // kernel; only read_blocks() / write_blocks() are re-implemented on top of host memory.
 //
-// usage: inserter [-f] [-r] <file or folder> <parent inode> <storage.bin>
+// usage: inserter [-f] [-k] [-r] <file or folder> <parent inode> <storage.bin>
 //        inserter -l <inode> <storage.bin>          (list a directory)
 //   -f  replace the entry when the name already exists
+//   -k  keep entries that already exist (skip them without an error)
 //   -r  insert a folder recursively (default: only create the empty folder)
+// Only the 4 MiB file system region at the start of the image is touched (the rest is swap).
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -23,6 +25,7 @@ uint8_t *image_storage;
 uint8_t *file_buffer;
 uint8_t *read_buffer;
 bool is_replace   = false;
+bool is_keep      = false;
 bool is_recursive = false;
 
 void read_blocks(void *ptr, uint32_t logical_block_address, uint8_t block_count) {
@@ -101,6 +104,10 @@ static int insert_file(const char *path, const char *name, uint8_t name_len, uin
     }
 
     int8_t retcode = write(&request);
+    if (retcode == 1 && is_keep && !is_replace) {
+        puts("Kept existing entry");
+        return 0;
+    }
     if (retcode == 1 && is_replace) {
         retcode = delete(request);
         if (retcode == 0)
@@ -124,7 +131,7 @@ static int insert_directory(const char *path, const char *name, uint8_t name_len
     };
     int8_t retcode = write(&request);
     printf("Folder   : %.*s -> %s\n", name_len, name, write_message(retcode));
-    if (retcode != 0 && !(retcode == 1 && is_recursive))
+    if (retcode != 0 && !(retcode == 1 && (is_recursive || is_keep)))
         return 1;
     if (!is_recursive)
         return 0;
@@ -201,6 +208,8 @@ int main(int argc, char *argv[]) {
             is_replace = true;
         else if (strcmp(argv[argi], "-r") == 0)
             is_recursive = true;
+        else if (strcmp(argv[argi], "-k") == 0)
+            is_keep = true;
         else if (strcmp(argv[argi], "-l") == 0)
             list_mode = true;
         else
@@ -209,9 +218,10 @@ int main(int argc, char *argv[]) {
     }
 
     if ((!list_mode && argc - argi < 3) || (list_mode && argc - argi < 2)) {
-        fprintf(stderr, "Usage: inserter [-f] [-r] <file or folder> <parent_inode> <storage.bin>\n");
+        fprintf(stderr, "Usage: inserter [-f] [-k] [-r] <file or folder> <parent_inode> <storage.bin>\n");
         fprintf(stderr, "       inserter -l <directory_inode> <storage.bin>\n");
         fprintf(stderr, "  -f : replace if the entry already exists\n");
+        fprintf(stderr, "  -k : keep (skip) entries that already exist\n");
         fprintf(stderr, "  -r : insert folders recursively\n");
         exit(1);
     }

@@ -19,4 +19,7 @@ void kernel_panic(const char *message) __attribute__((noreturn));
  */
 void kernel_panic_exception(struct InterruptFrame *frame) __attribute__((noreturn));
 
+// Name of a CPU exception vector ("Page Fault", ...)
+const char *kernel_exception_name(uint32_t vector);
+
 #endif

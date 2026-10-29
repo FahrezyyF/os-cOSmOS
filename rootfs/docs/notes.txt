@@ -1,0 +1,6 @@
+Milestone 3 notes
+- paging: 4 KiB pages, higher half kernel at 0xC0000000
+- swap: page fault handler, swap in / swap out, clock replacement
+- user mode: the shell runs in ring 3 and talks to the kernel with int 0x30
+- shell: pipes, redirection, history, tab completion, scripts
+TODO: processes and a scheduler in Milestone 4

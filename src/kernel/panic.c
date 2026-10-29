@@ -15,6 +15,10 @@ static const char *exception_names[32] = {
     "Hypervisor Injection",      "VMM Communication",           "Security Exception",     "Reserved",
 };
 
+const char *kernel_exception_name(uint32_t vector) {
+    return vector < 32 ? exception_names[vector] : "Unknown";
+}
+
 static void panic_halt(void) __attribute__((noreturn));
 static void panic_halt(void) {
     for (;;)
@@ -43,7 +47,7 @@ void kernel_panic(const char *message) {
 
 void kernel_panic_exception(struct InterruptFrame *frame) {
     uint32_t vector = frame->int_number;
-    const char *name = vector < 32 ? exception_names[vector] : "Unknown";
+    const char *name = kernel_exception_name(vector);
     panic_screen_begin("UNHANDLED_CPU_EXCEPTION");
 
     kprintf("  Exception  : #%u %s\n", vector, name);

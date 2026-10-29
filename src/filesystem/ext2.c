@@ -1111,8 +1111,8 @@ int8_t read(struct EXT2DriverRequest request) {
         return 1;
     if (request.buffer_size < node.i_size)
         return 2;
-    if (node.i_size > 0 && request.buf == NULL)
-        return -1;
+    // buf may be 0: with paging, virtual address 0 is the start of user space (book 3.3.5
+    // loads the shell there), and syscall pointers are validated before they reach here
     bool ok = read_node_data(&node, (uint8_t*) request.buf, node.i_size);
     ptr_cache_flush();
     return ok ? 0 : -1;

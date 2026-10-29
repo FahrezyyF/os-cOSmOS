@@ -276,7 +276,7 @@ static bool txn_commit(struct CosmoFS *fs) {
     uint32_t js = fs->sb.journal_start;
 
     // Payload checksum = CRC of the CRCs of every payload block, in order
-    uint32_t block_crcs[COSMOFS_TXN_MAX_BLOCKS];
+    uint32_t block_crcs[COSMOFS_TXN_MAX_BLOCKS] = {0}; // (only the first txn_count are hashed)
     bool ok = true;
     for (uint32_t i = 0; i < fs->txn_count; i++) {
         block_crcs[i]   = crc32(fs->txn[i].data, BS);
@@ -362,7 +362,7 @@ static bool recover(struct CosmoFS *fs) {
         return true; // crashed before the commit record: transaction never happened
 
     // The transaction buffer doubles as replay storage
-    uint32_t block_crcs[COSMOFS_TXN_MAX_BLOCKS];
+    uint32_t block_crcs[COSMOFS_TXN_MAX_BLOCKS] = {0}; // (only the first txn_count are hashed)
     for (uint32_t i = 0; i < desc.count; i++) {
         uint32_t target = desc.targets[i];
         if (target == 0 || target >= fs->sb.total_blocks ||
@@ -1040,8 +1040,7 @@ int8_t cosmofs_read(struct CosmoFS *fs, const struct CosmoFSRequest *request) {
         return 2;
     if (node.size == 0)
         return 0;
-    if (request->buf == NULL)
-        return -1;
+    // buf may be 0 (= user virtual address 0, where programs are loaded)
     struct ReadContext rc = {.dst = (uint8_t*) request->buf, .offset = 0, .size = node.size};
     if (!for_each_extent(fs, &node, read_extent_visitor, NULL, &rc) || rc.offset != node.size)
         return -1;

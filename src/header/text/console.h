@@ -59,4 +59,22 @@ void console_get_cursor(uint8_t *row, uint8_t *col);
 // printf-style output to the console (and serial log)
 int kprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* -- Scrollback (bonus: scrollable shell) -- */
+
+/**
+ * Keep up to `lines` lines that scroll off the top of the region in a kernel heap buffer.
+ * @return false when the buffer could not be allocated (scrollback stays off)
+ */
+bool console_enable_scrollback(uint32_t lines);
+
+/**
+ * Move the view through the scrollback: delta < 0 goes back in history, delta > 0 forward.
+ * Any output, or delta = 0 via console_scroll_live(), returns to the live screen.
+ * @return lines currently scrolled back (0 = live view)
+ */
+uint32_t console_scroll_view(int32_t delta);
+void     console_scroll_live(void);
+uint32_t console_view_offset(void);
+uint32_t console_history_lines(void);
+
 #endif

@@ -1,4 +1,17 @@
 default 0
-timeout 0
-title OS2025
-kernel /boot/kernel
+timeout 3
+
+title cOSmOS - EXT2 root (IF2130 Edition)
+kernel /boot/kernel fs=ext2
+
+title cOSmOS - CosmoFS root (custom journaled file system)
+kernel /boot/kernel fs=cosmo
+
+title cOSmOS - EXT2 root, VGA text mode
+kernel /boot/kernel fs=ext2 video=text
+
+title cOSmOS - CosmoFS root, VGA text mode
+kernel /boot/kernel fs=cosmo video=text
+
+title cOSmOS - EXT2 root, only 6 MiB of RAM (paging + swap demo)
+kernel /boot/kernel fs=ext2 mem=6
