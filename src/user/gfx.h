@@ -19,6 +19,8 @@ struct Canvas {
 
 // Allocate the buffer and open a window (x, y < 0: let the compositor place it)
 bool canvas_open(struct Canvas *c, int32_t w, int32_t h, const char *title, int32_t x, int32_t y);
+// Same, with SYSCALL_WINDOW_* flags (SYSCALL_WINDOW_FOCUS: take the keyboard at once)
+bool canvas_open_flags(struct Canvas *c, int32_t w, int32_t h, const char *title, int32_t x, int32_t y, uint32_t flags);
 void canvas_present(const struct Canvas *c);
 // Next event (block = sleep until one arrives); type SYSCALL_WEVENT_NONE when none
 void canvas_event(const struct Canvas *c, struct SyscallWindowEvent *e, bool block);

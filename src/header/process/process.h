@@ -210,6 +210,10 @@ struct ProcessControlBlock {
     } memory;
 
     struct ProcessFile files[PROCESS_FD_MAX];
+
+    // x87 FPU state (fnsave image), saved when the process leaves the CPU
+    uint8_t fpu_state[108];
+    bool    fpu_saved;
 };
 
 /**

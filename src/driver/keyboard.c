@@ -97,6 +97,9 @@ void keyboard_isr(void) {
     uint8_t code     = scancode & (uint8_t) ~SCANCODE_BREAK_BIT;
     keyboard_state.read_extended_mode = false;
 
+    // A focused window also sees raw presses and releases (games: key up events, modifiers)
+    compositor_raw_key_hook(code, extended, released);
+
     // Modifier state is tracked even when input is off, so it never gets out of sync
     switch (code) {
         case SCANCODE_LEFT_SHIFT:

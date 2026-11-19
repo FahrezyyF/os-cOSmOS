@@ -1,4 +1,5 @@
 #include "user/gfx.h"
+#include "user/inflate.h"
 
 /**
  * vplay - video player for CVID files (tools/video2cvid.py), e.g. Bad Apple!!.
@@ -7,7 +8,8 @@
  *
  * Graphics mode: the video plays in a window (scaled, default x3); the close box, Q or
  * Ctrl+C stop it. VGA text mode (or -t): ASCII art in the console; Ctrl+C stops it.
- * The whole file is read from the file system first, then frames are decoded on the fly
+ * The whole file is read from the file system first (CZIP files - tools/czip.py - are
+ * inflated in memory: Bad Apple!! fits the 4 MiB root this way), then frames are decoded on the fly
  * (XOR deltas stored as run lengths) and shown on time: the player sleeps until each
  * frame is due and skips drawing when it falls behind, so the speed stays right.
  */
@@ -78,7 +80,7 @@ static bool locate(const char *path, uint32_t *parent, const char **leaf) {
 
 int main(int argc, char *argv[]) {
     bool text = false, loop = false;
-    uint32_t scale = 3;
+    uint32_t scale = 0; // 0 = as large as fits (up to 4x)
     const char *path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-t") == 0)
@@ -102,6 +104,17 @@ int main(int argc, char *argv[]) {
         printf("vplay: cannot read %s\n", path);
         return 1;
     }
+    if (czip_is((const uint8_t*) data, size)) {
+        uint8_t *plain;
+        uint32_t plain_size;
+        if (!czip_unpack((const uint8_t*) data, size, &plain, &plain_size)) {
+            printf("vplay: %s: corrupt compressed file\n", path);
+            return 1;
+        }
+        free(data);
+        data = (char*) plain;
+        size = plain_size;
+    }
     struct VideoHeader h;
     if (size < sizeof(h) || memcmp(data, "CVID", 4) != 0) {
         printf("vplay: %s is not a CVID video (convert with tools/video2cvid.py)\n", path);
@@ -115,14 +128,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     if (scale < 1)
-        scale = 1;
+        scale = 4;
     if (!text && !gfx_available())
         text = true;
     struct Canvas c;
     if (!text) {
         while (scale > 1 && (h.width * scale > 800 || h.height * scale > 600))
             scale--;
-        if (!canvas_open(&c, (int32_t) (h.width * scale), (int32_t) (h.height * scale), "vplay", -1, -1)) {
+        if (!canvas_open_flags(&c, (int32_t) (h.width * scale), (int32_t) (h.height * scale), "vplay", -1, -1,
+                               SYSCALL_WINDOW_FOCUS)) {
             printf("vplay: cannot open a window, using the console\n");
             text = true;
         }

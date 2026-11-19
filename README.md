@@ -31,7 +31,7 @@
   - [Memilih root file system](#memilih-root-file-system)
   - [Menguji paging dan swap dengan RAM kecil](#menguji-paging-dan-swap-dengan-ram-kecil)
   - [Jaringan](#jaringan)
-  - [Video (Bad Apple!!)](#video-bad-apple)
+  - [Bad Apple!! dan DOOM](#bad-apple-dan-doom)
   - [Disk image dan program host](#disk-image-dan-program-host)
   - [Testing](#testing)
 - [Fitur yang Dibuat](#fitur-yang-dibuat)
@@ -69,7 +69,7 @@ Opsional: `ffmpeg` untuk mengonversi video sendiri (bonus Bad Apple!!). Untuk VS
 make run
 ```
 
-`make run` melakukan semuanya: build kernel dan ISO, build shell dan semua program user (`/bin`, `/apps`, `/games`, klip `/media/demo.cvid`), build program host, membuat disk image bila belum ada, memasukkan semua program dan file contoh (`rootfs/`) ke **kedua** disk, lalu menjalankan QEMU dengan kartu jaringan RTL8139. GRUB menampilkan menu selama 3 detik, kemudian boot ke EXT2.
+`make run` melakukan semuanya: build kernel dan ISO, build shell dan semua program user (`/bin`, `/apps`, `/games`), menyalin data terkompresi dari `assets/` (Bad Apple!! ke `/media`, WAD DOOM ke `/games`), build program host, membuat disk image bila belum ada, memasukkan semua program dan file contoh (`rootfs/`) ke **kedua** disk, lalu menjalankan QEMU dengan kartu jaringan RTL8139. GRUB menampilkan menu selama 3 detik, kemudian boot ke EXT2.
 
 | Perintah | Kegunaan |
 | --- | --- |
@@ -80,7 +80,7 @@ make run
 | `make user-shell` | Build shell: `bin/shell_elf` (ELF dengan simbol untuk gdb) dan `bin/shell` (CEX) |
 | `make user-programs` | Build semua program user ke `bin/rootfs/{bin,apps,games,media}` |
 | `make insert-shell` | Masukkan shell dan semua program (`-f`, versi lama diganti) serta isi `rootfs/` (`-k`) ke `storage.bin` dan `cosmo.bin` |
-| `make video VIDEO=file.mp4` | Konversi video ke `/media/badapple.cvid` (perlu `ffmpeg`) |
+| `make video VIDEO=file.mp4` | Buat ulang `assets/badapple.cvid` dari video (perlu `ffmpeg`) |
 | `make disk` | **Menghapus** dan membuat ulang kedua disk image (12 MiB) |
 | `make test` | Build dan jalankan semua unit test host (AddressSanitizer + UBSan) |
 | `make clean` | Hapus hasil build (disk image tidak ikut terhapus) |
@@ -98,7 +98,8 @@ ls /bin | grep -c .               pipeline dua program terpisah
 export PATH=$PATH:/games ; snake  PATH (persistent), game yang mem-blok shell
 gclock ; bounce ; paint           window compositor (mode grafis)
 ping 10.0.2.2 ; nslookup example.com
-vplay /media/demo.cvid            video player
+vplay /media/badapple.cvid        Bad Apple!! (tutup window / Q / Ctrl+C untuk berhenti)
+/games/doom                       DOOM (Esc = menu, panah, Ctrl tembak, Spasi buka pintu)
 ```
 
 ### Memilih root file system
@@ -152,17 +153,23 @@ nc -ul 6000                            # menerima datagram dari udpsend
 
 ![Jaringan: ping, DNS, UDP dua arah](docs/screenshots/network.png)
 
-### Video (Bad Apple!!)
+### Bad Apple!! dan DOOM
 
-`vplay` memutar video 1-bit format CVID dari file system, di window (mode grafis, default skala x3) atau sebagai ASCII di konsol (`vplay -t`, atau otomatis di text mode). Klip demo `/media/demo.cvid` dibuat saat build. Untuk Bad Apple!!, sediakan file videonya sendiri:
+Keduanya berjalan dari file di file system root. Data besar disimpan terkompresi (**CZIP**: header `"CZIP"` + ukuran asli + stream zlib, `tools/czip.py`) dan di-*inflate* di memori oleh program (`src/user/inflate.c`, decoder DEFLATE sendiri), sehingga muat di region EXT2 4 MiB tanpa mengubah layout EXT2 IF2130.
 
-```bash
-make video VIDEO=~/bad_apple.mp4      # -> /media/badapple.cvid (160x120, 30 fps)
-make run
-# di cOSmOS:  vplay /media/badapple.cvid   (tutup window, Q, atau Ctrl+C untuk berhenti)
+```
+vplay /media/badapple.cvid       window grafis, 24 fps (seluruh 3:39 = 5.258 frame, 0 terlewat)
+vplay -t /media/badapple.cvid    versi ASCII di konsol (otomatis di VGA text mode)
+/games/doom                      DOOM shareware (E1), window 640x400, sekitar 70 fps di QEMU
 ```
 
-![vplay memutar klip demo 30 fps di window](docs/screenshots/vplay.png)
+- **Bad Apple!!**: format video CVID (frame 1-bit, selisih XOR antar-frame sebagai run length), 128x96, 24 fps, 0,96 MB setelah CZIP. `vplay` menghitung waktu setiap frame dari waktu mulai dan tidur sampai frame berikutnya; berhenti dengan close box, `Q`, atau `Ctrl+C` (window maupun ASCII). `make video VIDEO=file.mp4` membuat ulang `assets/badapple.cvid` dari video lain (perlu `ffmpeg`).
+- **DOOM**: [doomgeneric](https://github.com/ozkl/doomgeneric) (GPL-2.0) dengan lapisan platform `src/user/doom/doomgeneric_cosmos.c` dan C library kecil `src/user/libc` (stdio di atas syscall file system, ctype, stdlib, pembagian 64-bit). WAD shareware v1.9 ada di `/games/doom1.wad` (CZIP 1,75 MB). Kontrol: panah = jalan, `Ctrl` = tembak, `Spasi` = buka pintu/pakai, `Shift` = lari, `Alt` = strafe, `Esc` = menu (Quit Game untuk keluar), close box juga keluar. Klik window bila keyboard kembali ke konsol. Frame rate tampil di title bar.
+- Pendukung di kernel: event tombol **tekan dan lepas** (scancode) untuk window yang fokus, flag window `SYSCALL_WINDOW_FOCUS`, dan **state FPU x87 per proses** (`fnsave`/`frstor` setiap context switch) karena DOOM memakai floating point.
+
+![Bad Apple!! di vplay](docs/screenshots/badapple.png)
+
+![DOOM di window compositor](docs/screenshots/doom.png)
 
 ### Disk image dan program host
 
@@ -174,7 +181,8 @@ make run
 - Disk 12 MiB: region file system 4 MiB, lalu partisi swap 8 MiB (2.048 slot x 4 KiB). Disk kosong diformat otomatis; `make run` tidak pernah menghapus data, hanya `make disk` yang melakukannya.
 - `inserter` (EXT2) dan `cosmofs-tool` (CosmoFS) memakai driver file system yang sama persis dengan kernel. Opsi: `-f` ganti, `-k` biarkan yang ada, `-r` rekursif, `-l <inode>` daftar isi. Root kedua file system adalah inode 1.
 - `elf2cex` (`src/external/elf2cex.c`) mengubah ELF hasil linker menjadi executable CEX.
-- `tools/video2cvid.py` mengubah video menjadi CVID.
+- `tools/video2cvid.py` mengubah video menjadi CVID, `tools/czip.py` mengompres file data (CZIP).
+- Program di `/bin` di-link dengan alignment 4 KiB pada **alamat** section (proteksi per page tetap) tetapi tanpa padding di file (`ld -n`), sehingga 39 program hanya ~470 KB.
 
 ```bash
 ./bin/inserter shell 1 bin/storage.bin          # Book 3.3.1 (root EXT2 IF2130 = inode 1)
@@ -196,6 +204,7 @@ make test
 | `test-cosmofs` | 6.704 | CRUD, extent, index, simulasi mati listrik di setiap block write, CRC |
 | `test-pipe` | 52 | Pipe kernel: urutan FIFO, ring yang membesar sampai 1 MiB, EOF, broken pipe, batas pool |
 | `test-cex` | 19 | `bin/shell` hasil `elf2cex` lolos validator loader kernel; 10 jenis kerusakan (checksum, alignment < 2 KiB, `.text` writable, entry di luar `.text`, overlap, ...) ditolak; CRC-32 known answer |
+| `test-inflate` | 240 | Decoder DEFLATE/zlib cOSmOS terhadap `compress2` zlib sistem, level 0-9, data acak/teks/run, buffer terlalu kecil, stream rusak |
 | `test-string`, `test-format` | 613 | `string.c` dan `vsnprintf` kernel dibandingkan dengan glibc |
 
 Pengujian di QEMU (headless, input lewat monitor QEMU, output lewat screenshot dan log serial): boot EXT2 grafis dan CosmoFS text mode, program flat/CEX/ELF, argumen, `ps`, clock + kill + jalankan ulang, job background, pipeline program dan built-in, redirection, Ctrl+C, `exit` init (shell baru), crash `null`/`ro` (hanya proses itu yang mati), 16 proses sekaligus, PATH bertahan setelah reboot, RAM 6 MiB dengan tiga `memtest` + swap, window compositor (tiga window, drag, fokus, menggambar), jaringan (ping, DNS, UDP dua arah), dan video 30 fps.
@@ -294,7 +303,8 @@ Shell (`src/user/shell.c`) adalah proses init. Perintah yang butuh state shell a
 | `/games/snake` | CEX | Game di konsol yang **mem-blok shell** selama berjalan (bonus aplikasi lain); di luar PATH awal |
 | `/apps/gclock`, `bounce`, `paint` | CEX | Aplikasi window: jam analog, animasi bola 30 fps, menggambar dengan mouse |
 | `/apps/ifconfig`, `ping`, `nslookup`, `udpsend`, `udpecho` | CEX | Jaringan: info kartu, ICMP echo, query DNS lewat UDP, kirim/terima UDP |
-| `/apps/vplay` | CEX | Video player CVID (window atau ASCII) |
+| `/apps/vplay` | CEX | Video player CVID (window atau ASCII), Bad Apple!! di `/media/badapple.cvid` |
+| `/games/doom` | CEX | DOOM shareware (doomgeneric + C library `src/user/libc`) |
 | `/bin/*` (39 program) | ELF | Perintah shell terpisah (Book 4.3.6) |
 
 ![Window compositor: tiga program dengan window masing-masing](docs/screenshots/windows.png)
@@ -318,7 +328,8 @@ Shell (`src/user/shell.c`) adalah proses init. Perintah yang butuh state shell a
 | **Separate shell commands** (Book 4.3.6) | - | 39 perintah sebagai executable ELF di `/bin` (linker + crt0 sendiri), stdin/stdout lewat pipe, tanpa zombie/orphan |
 | Hardware Drivers: Speaker, Mouse | 1 + 3 | PIT channel 2 (`beep`, suara makan di snake); PS/2 IRQ12 dengan wheel |
 | **Hardware Drivers: Network Card, UDP** | 9 | Driver **RTL8139** (DMA ring, IRQ dari PCI) dan stack Ethernet, ARP (cache + reply), IPv4, ICMP echo (balas dan kirim), **UDP socket** untuk program user (blocking receive dengan timeout) |
-| Bad Apple!! | s.d. 20 | `vplay` + format CVID + `tools/video2cvid.py`: video dari file lokal, 30 fps stabil, berhenti dengan close window / Q / Ctrl+C (mode ASCII juga). Klip demo disertakan; video Bad Apple!! dikonversi sendiri dengan `make video` |
+| **Bad Apple!!** | s.d. 20 | Video dari file lokal `/media/badapple.cvid`, versi grafis di window (24 fps stabil, 0 frame terlewat) dan ASCII, berhenti dengan close window / Q / Ctrl+C |
+| **DOOM** | ??? | DOOM shareware dapat dimainkan di window (~70 fps), WAD di file system, keluar lewat menu atau close box |
 | Kreativitas | s.d. 5 | Splash screen, status bar dan taskbar, layar panic, crash recovery per proses, `top`, game snake, demo jaringan (DNS), video player, `memtest` |
 
 ## Desain Memori
@@ -401,12 +412,14 @@ src/
 ├── text/         framebuffer, console (scrollback), font8x16
 ├── filesystem/   ext2.c, cosmofs.c, vfs.c
 ├── stdlib/       string.c, format.c, heap.c (dipakai kernel dan user)
-├── user/         crt0.s, ulib (syscall, malloc, printf, net), gfx (canvas window), shlib.c (output, path),
-│                 shell.c, cmd_*.c (perintah), cmd_table.c, bin/command.c (pembungkus /bin), apps/*.c
+├── user/         crt0.s, ulib (syscall, malloc, printf, net), gfx (canvas window), inflate.c (zlib), shlib.c,
+│                 shell.c, cmd_*.c (perintah), cmd_table.c, bin/command.c (pembungkus /bin), apps/*.c,
+│                 libc/ (C library untuk port), doom/ (doomgeneric + doomgeneric_cosmos.c)
 ├── external/     inserter, cosmofs-tool, elf2cex (program host)
 └── header/       header semua modul (process/, net/, graphics/, ...)
 rootfs/           file contoh untuk root (README.txt, docs/, scripts/*.sh termasuk m4demo.sh)
-tools/            gen_font.py, video2cvid.py
+assets/           data terkompresi untuk disk: doom1.wad, badapple.cvid (lihat assets/README.md)
+tools/            gen_font.py, video2cvid.py, czip.py
 test/             unit test host (make test)
 docs/             screenshot dan maskot
 ```
@@ -429,4 +442,7 @@ docs/             screenshot dan maskot
 - Russ Cox, [Regular Expression Matching: the Virtual Machine Approach](https://swtch.com/~rsc/regexp/regexp2.html) (Pike VM untuk `grep`).
 - Howard Hinnant, [chrono-compatible low-level date algorithms](https://howardhinnant.github.io/date_algorithms.html).
 - [The Second Extended File System](https://www.nongnu.org/ext2-doc/ext2.html) oleh Dave Poirier.
+- [doomgeneric](https://github.com/ozkl/doomgeneric) oleh ozkl (GPL-2.0), berbasis Chocolate Doom / id Software; DOOM shareware WAD oleh id Software.
+- "Bad Apple!!" PV (Touhou Project, Alstroemeria Records / Anira), dipakai untuk bonus kuliah.
+- RFC 1950 / 1951 (zlib, DEFLATE) dan `puff.c` Mark Adler sebagai rujukan decoder Huffman kanonik.
 - Dikerjakan dengan bantuan Claude Code (Anthropic); proses dan analisisnya dicatat di jurnal kelompok.

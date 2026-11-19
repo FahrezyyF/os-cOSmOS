@@ -9,6 +9,10 @@ bool gfx_available(void) {
 }
 
 bool canvas_open(struct Canvas *c, int32_t w, int32_t h, const char *title, int32_t x, int32_t y) {
+    return canvas_open_flags(c, w, h, title, x, y, 0);
+}
+
+bool canvas_open_flags(struct Canvas *c, int32_t w, int32_t h, const char *title, int32_t x, int32_t y, uint32_t flags) {
     c->w = w;
     c->h = h;
     c->px = malloc((uint32_t) (w * h) * sizeof(uint32_t));
@@ -22,6 +26,7 @@ bool canvas_open(struct Canvas *c, int32_t w, int32_t h, const char *title, int3
     req.width = (uint32_t) w;
     req.height = (uint32_t) h;
     strncpy(req.title, title, sizeof(req.title) - 1);
+    req.flags = flags;
     syscall(SYS_WIN_CREATE, (uint32_t) &req, (uint32_t) &c->window, 0);
     if (c->window < 0) {
         free(c->px);

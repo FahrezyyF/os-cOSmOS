@@ -49,6 +49,7 @@ void scheduler_init(void) {
     slice_left_ms     = 0;
     resched_requested = false;
     active            = true;
+    scheduler_fpu_init();
     serial_printf("[sched] round robin, slices %u/%u/%u ms (low/normal/high), timer %u Hz\n",
                   SCHEDULER_SLICE_LOW_MS, SCHEDULER_SLICE_NORMAL_MS, SCHEDULER_SLICE_HIGH_MS, TIMER_FREQUENCY_HZ);
 }
@@ -64,6 +65,30 @@ void scheduler_save_context_to_current_running_pcb(struct Context ctx) {
     struct ProcessControlBlock *pcb = process_get_current_running_pcb_pointer();
     if (pcb != NULL)
         pcb->context = ctx;
+}
+
+/* ================================ FPU STATE ======================================== */
+
+// Programs may use the x87 FPU (DOOM does): its registers are per process too. The kernel
+// itself never uses floating point, so the FPU still holds the user state here.
+static void fpu_save(struct ProcessControlBlock *pcb) {
+    __asm__ volatile("fnsave (%0)" : : "r"(pcb->fpu_state) : "memory");
+    pcb->fpu_saved = true;
+}
+
+static void fpu_restore(struct ProcessControlBlock *pcb) {
+    if (pcb->fpu_saved)
+        __asm__ volatile("frstor (%0)" : : "r"(pcb->fpu_state) : "memory");
+    else
+        __asm__ volatile("fninit");
+}
+
+void scheduler_fpu_init(void) {
+    uint32_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(0x4u | 0x8u); // EM = 0 (no emulation), TS = 0
+    cr0 |= 0x2u | 0x20u;   // MP = 1, NE = 1 (native FPU error reporting)
+    __asm__ volatile("mov %0, %%cr0; fninit" : : "r"(cr0) : "memory");
 }
 
 /* ================================ WAKE-UP / REAPING ================================ */
@@ -161,8 +186,9 @@ void scheduler_switch_to_next_process(void) {
     slice_left_ms     = scheduler_slice_ms(next->metadata.priority);
     resched_requested = false;
 
-    // Virtual address space & process (book 4.2.2.2), then the CPU registers (assembly)
+    // Virtual address space & process (book 4.2.2.2), FPU, then the CPU registers (assembly)
     paging_use_page_directory(next->context.page_directory_virtual_addr);
+    fpu_restore(next);
     process_context_switch(next->context);
 }
 
@@ -173,6 +199,7 @@ __attribute__((noreturn)) static void preempt_current(const struct InterruptFram
     struct Context ctx;
     scheduler_context_from_frame(&ctx, frame);
     scheduler_save_context_to_current_running_pcb(ctx);
+    fpu_save(pcb);
     pcb->metadata.state = PROCESS_STATE_READY;
     scheduler_switch_to_next_process();
 }
@@ -231,6 +258,7 @@ void scheduler_block_current(const struct InterruptFrame *frame, PROCESS_WAIT re
     if (restart)
         ctx.eip -= 2; // back onto `int 0x30` (CD 30): the call runs again after the wake-up
     scheduler_save_context_to_current_running_pcb(ctx);
+    fpu_save(pcb);
     pcb->metadata.wait_reason = reason;
     pcb->metadata.wait_arg    = arg;
     pcb->metadata.state       = PROCESS_STATE_BLOCKED;

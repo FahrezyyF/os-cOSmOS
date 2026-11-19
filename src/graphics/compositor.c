@@ -159,6 +159,18 @@ static void repaint_all(struct Rect area) {
     repaint_windows(cells);
 }
 
+void compositor_after_console_scroll(int y_top, int y_bottom, int dy) {
+    if (stack_count == 0)
+        return;
+    struct Rect band = {0, y_top, graphics_get_width(), y_bottom - y_top};
+    for (uint32_t k = 0; k < stack_count; k++) {
+        struct Rect f = frame_rect(&windows[stack_order[k]]);
+        struct Rect moved = {f.x, f.y - dy, f.w, f.h + dy}, c;
+        if (intersect(moved, band, &c))
+            repaint_all(c); // console cells from the shadow grid, then every window on top
+    }
+}
+
 void compositor_after_console_draw(int x, int y, int w, int h) {
     if (stack_count == 0)
         return;
@@ -195,6 +207,8 @@ static void push_event(struct Window *win, uint8_t type, char key, uint8_t butto
     e->buttons = buttons;
     e->x       = x;
     e->y       = y;
+    e->scancode = 0;
+    e->extended = false;
     win->ev_count++;
     scheduler_request_resched();
 }
@@ -218,6 +232,16 @@ static void focus_window(int32_t index) {
 
 bool compositor_has_keyboard_focus(void) {
     return focused >= 0;
+}
+
+void compositor_raw_key_hook(uint8_t scancode, bool extended, bool released) {
+    if (focused < 0 || !windows[focused].used)
+        return;
+    struct Window *win = &windows[focused];
+    push_event(win, released ? SYSCALL_WEVENT_KEY_UP : SYSCALL_WEVENT_KEY_DOWN, 0, 0, 0, 0);
+    struct SyscallWindowEvent *e = &win->events[(win->ev_head + win->ev_count - 1) % COMPOSITOR_EVENT_MAX];
+    e->scancode = scancode;
+    e->extended = extended;
 }
 
 bool compositor_key_hook(char c) {
@@ -385,9 +409,13 @@ static void sys_create(uint32_t user_ptr, uint32_t result_ptr) {
         win->y = req.y;
     }
     clamp_position(win);
-    // On top, but the keyboard stays with the console until the window is clicked
+    // On top, but the keyboard stays with the console until the window is clicked (unless the
+    // program asks for the focus: a game or player that the shell waits for)
     stack_order[stack_count++] = index;
-    repaint_windows(frame_rect(win));
+    if (req.flags & SYSCALL_WINDOW_FOCUS)
+        focus_window(index);
+    else
+        repaint_windows(frame_rect(win));
     result = win->id;
     serial_printf("[wm] window %d \"%s\" %dx%d for pid %u\n", win->id, win->title, win->w, win->h, win->owner);
 done:

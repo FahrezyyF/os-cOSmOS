@@ -7,7 +7,8 @@ Programs (every one is its own process):
   /bin    separate shell commands (ELF):  ls cat grep ps kill pmap sched ...
   /apps   applications (CEX):  hello clock top counter paint bounce gclock
           ifconfig ping nslookup udpsend udpecho
-  /games  snake  (not in PATH at first: `export PATH=$PATH:/games`)
+  /games  snake, doom (+ doom1.wad)  (not in PATH at first: `export PATH=$PATH:/games`)
+  /media  badapple.cvid (Bad Apple!!, play it with vplay)
 
 Things to try in the shell:
   hello a b c                one program, its argc / argv
@@ -21,6 +22,8 @@ Things to try in the shell:
   pmap 1                     memory regions and page list of the shell
   execinfo hello             the CEX executable header of /apps/hello
   ping 10.0.2.2 ; nslookup example.com     the network card (UDP / ICMP)
+  vplay /media/badapple.cvid                Bad Apple!! in a window (vplay -t: ASCII)
+  /games/doom                               DOOM (Esc menu, arrows, Ctrl fire, Space use)
   cat docs/planets.txt | grep -n "gas|ice"
   find / "*.sh"              wildcard search over the tree
   memtest 8                  allocate 8 MiB and verify it (forces swapping on small RAM)

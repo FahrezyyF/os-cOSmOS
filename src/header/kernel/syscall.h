@@ -206,12 +206,15 @@ struct SyscallProcessMemory {
 
 #define SYSCALL_WINDOW_TITLE_MAX 32
 
+#define SYSCALL_WINDOW_FOCUS 0x1 // take the keyboard at once (games, players run in the foreground)
+
 struct SyscallWindow {
     int32_t  x;          // -1 = let the compositor place it
     int32_t  y;
     uint32_t width;      // client area in pixels
     uint32_t height;
     char     title[SYSCALL_WINDOW_TITLE_MAX];
+    uint32_t flags;      // SYSCALL_WINDOW_*
 };
 
 #define SYSCALL_WEVENT_NONE        0
@@ -221,6 +224,8 @@ struct SyscallWindow {
 #define SYSCALL_WEVENT_MOUSE_MOVE  4
 #define SYSCALL_WEVENT_CLOSE       5
 #define SYSCALL_WEVENT_FOCUS       6
+#define SYSCALL_WEVENT_KEY_DOWN    7  // raw key press: scancode (set 1) + extended, also modifiers
+#define SYSCALL_WEVENT_KEY_UP      8  // raw key release (games need to know when a key is let go)
 
 struct SyscallWindowEvent {
     uint8_t type;      // SYSCALL_WEVENT_*
@@ -228,6 +233,8 @@ struct SyscallWindowEvent {
     uint8_t buttons;
     int32_t x;         // mouse position inside the client area
     int32_t y;
+    uint8_t scancode;  // KEY_DOWN / KEY_UP: scancode set 1 without the break bit
+    bool    extended;  // ... preceded by 0xE0 (arrows, right Ctrl, ...)
 };
 
 struct SyscallWindowInfo {

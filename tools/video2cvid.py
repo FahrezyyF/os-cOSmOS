@@ -4,7 +4,7 @@
   python3 tools/video2cvid.py input.mp4 output.cvid [--size 160x120] [--fps 30] [--threshold 128]
   python3 tools/video2cvid.py --demo output.cvid        (procedural test clip, no ffmpeg needed)
 
-Real videos are decoded with ffmpeg (must be installed on the host), scaled to the target
+Real videos are decoded with ffmpeg (on PATH, or the binary named by $FFMPEG), scaled to the target
 size, converted to grayscale and thresholded to black / white (Bad Apple!! is already
 black and white).
 
@@ -17,6 +17,7 @@ CVID layout (little endian):
           in row-major order. A still frame is a single run.
 """
 import math
+import os
 import struct
 import subprocess
 import sys
@@ -67,7 +68,8 @@ def write_cvid(path, width, height, fps, frames):
 
 
 def ffmpeg_frames(src, width, height, fps, threshold):
-    cmd = ['ffmpeg', '-loglevel', 'error', '-i', src, '-vf', 'scale=%d:%d,fps=%d' % (width, height, fps),
+    ffmpeg = os.environ.get('FFMPEG', 'ffmpeg')  # e.g. the binary bundled with pip's imageio-ffmpeg
+    cmd = [ffmpeg, '-loglevel', 'error', '-i', src, '-vf', 'scale=%d:%d,fps=%d' % (width, height, fps),
            '-f', 'rawvideo', '-pix_fmt', 'gray', '-']
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     size = width * height

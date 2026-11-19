@@ -95,6 +95,9 @@ void scheduler_request_resched(void);
 void scheduler_get_stats(struct SchedulerStats *stats);
 uint32_t scheduler_slice_ms(uint8_t priority);
 
+// CR0 for a native x87 FPU (EM = 0, MP = NE = 1) and fninit; called by scheduler_init()
+void scheduler_fpu_init(void);
+
 // True once the init process runs (before that, IRQ0 only counts ticks)
 bool scheduler_is_active(void);
 
