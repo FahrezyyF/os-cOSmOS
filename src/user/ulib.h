@@ -50,8 +50,61 @@
 /* -- Raw system call (book 3.4.1.3) -- */
 void syscall(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
 
-/* -- Process -- */
+/* -- Process (chapter 4) -- */
 void exit(int code) __attribute__((noreturn));
+
+extern char **environ;                        // set by crt0.s (envp of main)
+const char *getenv(const char *name);         // NULL when not set
+
+/**
+ * Start a program. `parent`/`name` locate the executable; argv[0] should be its name.
+ * @return pid (> 0) or -PROCESS_CREATE_* error code
+ */
+int32_t  process_spawn(uint32_t parent, const char *name, uint8_t name_len, int argc, char **argv,
+                       int envc, char **envp, int32_t stdin_fd, int32_t stdout_fd, bool foreground);
+// Same, `require_header`: fail with -PROCESS_NOT_EXECUTABLE for files without a CEX / ELF header
+int32_t  process_spawn_ex(uint32_t parent, const char *name, uint8_t name_len, int argc, char **argv,
+                          int envc, char **envp, int32_t stdin_fd, int32_t stdout_fd, bool foreground,
+                          bool require_header);
+#define PROCESS_NOT_EXECUTABLE 7
+const char *process_error_name(int32_t negative_code);
+// Wait for a child (pid 0 = any): returns its pid and stores the status, -1 = no such child
+int32_t  process_wait(uint32_t pid, int32_t *status, bool nohang);
+int8_t   process_kill(uint32_t pid);          // 0 ok, 1 no such process, 2 init
+uint32_t process_list(struct SyscallProcessInfo *array, uint32_t max);
+int8_t   process_memory(struct SyscallProcessMemory *info);
+int8_t   process_set_priority(uint32_t pid, uint8_t priority);
+uint32_t getpid(void);
+uint32_t getppid(void);
+void     yield(void);
+void     detach(void);                        // continue in the background (the shell stops waiting)
+void     sched_info(struct SyscallSchedInfo *info);
+void     widget_set(const char *text, uint8_t color); // taskbar widget ("" removes it)
+
+/* -- Network (UDP / ICMP) -- */
+void    net_info(struct SyscallNetInfo *info);
+int32_t udp_bind(uint16_t port);                       // socket (< 0 = error)
+int32_t udp_send(int32_t socket, const uint8_t ip[4], uint16_t port, const void *buf, uint32_t len);
+// bytes received (ip / port of the sender filled), -2 timeout, -1 error
+int32_t udp_recv(int32_t socket, uint8_t ip[4], uint16_t *port, void *buf, uint32_t len, uint32_t timeout_ms);
+void    udp_close(int32_t socket);
+int32_t net_ping(const uint8_t ip[4], uint16_t sequence, uint32_t timeout_ms); // rtt ms, -2 timeout
+bool    parse_ip(const char *s, uint8_t ip[4]);
+
+/* -- stdout helpers for programs (fd 1: the console or a pipe) -- */
+int printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+int printf_color(uint8_t color, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+/* -- File descriptors: 0 stdin, 1 stdout, 2 stderr (console) -- */
+int8_t   pipe_open(int32_t fds[2]);           // fds[0] read end, fds[1] write end
+int32_t  fd_read(int32_t fd, void *buf, uint32_t len);   // bytes, 0 = EOF, -1 error, -2 console
+int32_t  fd_write(int32_t fd, const void *buf, uint32_t len, uint8_t color);
+bool     fd_write_all(int32_t fd, const void *buf, uint32_t len, uint8_t color);
+char    *fd_read_all(int32_t fd, uint32_t *len); // until EOF, malloc'd, null-terminated
+void     fd_close(int32_t fd);
+uint8_t  fd_type(int32_t fd);                 // SYSCALL_FD_*
+void     chdir(const char *absolute_path, uint32_t inode);
+bool     getcwd(char *buf, uint32_t size);
 
 /* -- Console -- */
 char     getchar_wait(void);                  // blocks; returns ASCII or a KEY_* code

@@ -119,27 +119,31 @@ set_tss_register:
 
 
 kernel_execute_user_program:
+    ; Book 3.3.5 / 4.1.4: enter ring 3 with iret (no scheduler involved).
+    ; void kernel_execute_user_program(void *entry, void *user_stack)
+    ; Chapter 4 convention: user_stack is the esp prepared by process creation (argc, argv,
+    ; envp are on it); NULL keeps the chapter 3 value, the last dword below 4 MiB.
+    ; cOSmOS normally enters user mode through process_context_switch() instead.
     mov  eax, 0x20 | 0x3
     mov  ds, ax
     mov  es, ax
     mov  fs, ax
     mov  gs, ax
 
-    ; Using iret (return instruction for interrupt) technique for privilege change
     ; Stack values will be loaded into these register:
     ; [esp] -> eip, [esp+4] -> cs, [esp+8] -> eflags, [] -> user esp, [] -> user ss
-    mov  ecx, [esp+4] ; Save first (before pushing anything to stack) for last push
+    mov  ecx, [esp+4] ; entry, saved before pushing anything to stack
+    mov  edx, [esp+8] ; user stack pointer
+    test edx, edx
+    jnz  .have_stack
+    mov  edx, 0x400000 - 4
+.have_stack:
     push eax ; Stack segment selector (GDT_USER_DATA_SELECTOR), user privilege
-    mov  eax, ecx
-    add  eax, 0x400000 - 4
-    push eax ; User space stack pointer (esp), move it into last 4 MiB
+    push edx ; User space stack pointer (esp)
     pushf    ; eflags register state, when jump inside user program
-    ; cOSmOS: the shell is also (re)started from inside interrupt handlers (exit, crash), where
-    ; IF = 0. Force IF = 1 so the user program always runs with interrupts enabled.
-    or   dword [esp], 0x200
+    or   dword [esp], 0x200 ; IF = 1 in user mode (may be called with interrupts off)
     mov  eax, 0x18 | 0x3
     push eax ; Code segment selector (GDT_USER_CODE_SELECTOR), user privilege
-    mov  eax, ecx
-    push eax ; eip register to jump back
+    push ecx ; eip register to jump back
 
     iret

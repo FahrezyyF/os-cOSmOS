@@ -18,11 +18,19 @@ int cmd_help(int argc, char **argv, struct Input *in) {
         return 1;
     }
     out_color(C_WHITE);
-    out_printf("cOSmOS shell commands (all run in user mode, through int 0x30 system calls):\n");
+    out_printf("cOSmOS commands (user mode, int 0x30 system calls). ");
+    out_color(C_YELLOW);
+    out_printf("yellow");
+    out_color(C_WHITE);
+    out_printf(" = shell built-in, ");
+    out_color(C_LIGHT_GREEN);
+    out_printf("green");
+    out_color(C_WHITE);
+    out_printf(" = separate program in /bin\n");
     bool wide = screen_cols >= 100;
     for (uint32_t i = 0; i < shell_command_count; i++) {
         const struct Command *c = &shell_commands[i];
-        out_color(C_YELLOW);
+        out_color((c->flags & COMMAND_EXTERNAL) ? C_LIGHT_GREEN : C_YELLOW);
         out_printf("  %-9s", c->name);
         out_color(C_DARK_GRAY);
         if (wide)
@@ -31,9 +39,11 @@ int cmd_help(int argc, char **argv, struct Input *in) {
         out_printf("%s\n", c->help);
     }
     out_color(C_WHITE);
-    out_printf("Syntax: a | b (pipe), > / >> / < (redirect), ; && || (sequence), 'quotes', $VAR, $?, *.txt\n");
+    out_printf("Apps  : hello, clock, snake, top, counter, ... (`ls /apps`), run by name through PATH\n");
+    out_printf("Syntax: a | b (pipe), > / >> / < (redirect), ; && || (sequence), prog & (background),\n");
+    out_printf("        'quotes', $VAR, $?, $$, *.txt\n");
     out_printf("Keys  : Tab complete, Up/Down history, Left/Right/Home/End edit, PgUp/PgDn or wheel scroll,\n");
-    out_printf("        Ctrl+C cancel, Ctrl+L clear, Ctrl+U / Ctrl+K / Ctrl+W delete\n");
+    out_printf("        Ctrl+C cancel / stop the foreground program, Ctrl+L clear, Ctrl+U / Ctrl+K / Ctrl+W delete\n");
     out_color(C_LIGHT_GRAY);
     return 0;
 }
@@ -189,7 +199,7 @@ int cmd_free(int argc, char **argv, struct Input *in) {
                m.kernel_pool_free * 4);
     out_printf("            heap %u KiB, page tables %u (pool first, then the RAM pool)\n", m.kernel_heap_pages * 4,
                m.page_tables);
-    out_printf("This shell: %u resident pages (%u KiB), program break 0x%08x\n", m.user_pages, m.user_pages * 4,
+    out_printf("This process: %u resident pages (%u KiB), program break 0x%08x\n", m.user_pages, m.user_pages * 4,
                m.user_break);
     out_printf("Paging    : %u page faults = %u demand-zero + %u swap-in, %u swap-out, %u refused\n", m.page_faults,
                m.demand_zero, m.swap_ins, m.swap_outs, m.failed_faults);
@@ -356,8 +366,12 @@ int cmd_crash(int argc, char **argv, struct Input *in) {
     (void) in;
     const char *kind = argc > 1 ? argv[1] : "kernel";
     out_flush();
-    note_printf(C_YELLOW, "crash: %s - the kernel catches the fault and starts a new shell\n", kind);
-    if (strcmp(kind, "gpf") == 0) {
+    note_printf(C_YELLOW, "crash: %s - the kernel catches the fault and ends this process only\n", kind);
+    if (strcmp(kind, "null") == 0) {
+        *(volatile uint32_t*) 0 = 1; // page 0 is never mapped for CEX / ELF programs: #PF
+    } else if (strcmp(kind, "ro") == 0) {
+        *(volatile uint8_t*) (uintptr_t) &cmd_crash = 0xC3; // .text is read-only: #PF (protection)
+    } else if (strcmp(kind, "gpf") == 0) {
         __asm__ volatile("cli"); // privileged instruction in ring 3: #GP
     } else if (strcmp(kind, "div") == 0) {
         volatile int zero = 0;

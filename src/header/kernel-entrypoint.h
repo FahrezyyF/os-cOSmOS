@@ -30,7 +30,11 @@ extern uint32_t _multiboot_info_address;   // physical address of struct Multibo
  * @param virtual_addr Pointer into user program that already in memory
  * @warning            Assuming pointed memory is properly loaded with instruction
  */
-extern void kernel_execute_user_program(void *virtual_addr) __attribute__((noreturn));
+/**
+ * Jump to ring 3 at `virtual_addr` with esp = `user_stack` (NULL: 0x400000 - 4).
+ * Book 4.1.4 test path; the scheduler uses process_context_switch() instead.
+ */
+extern void kernel_execute_user_program(void *virtual_addr, void *user_stack) __attribute__((noreturn));
 
 /**
  * Set the tss register pointing to GDT_TSS_SELECTOR with ring 0

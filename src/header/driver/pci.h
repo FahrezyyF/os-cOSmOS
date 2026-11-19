@@ -32,6 +32,9 @@ struct PCIAddress {
  */
 uint32_t pci_config_read32(struct PCIAddress addr, uint8_t offset);
 
+// Write a 32-bit register of the configuration space (e.g. enable bus mastering)
+void pci_config_write32(struct PCIAddress addr, uint8_t offset, uint32_t value);
+
 /**
  * Brute-force scan every bus/slot/function for a vendor & device id pair
  *

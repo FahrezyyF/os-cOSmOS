@@ -110,4 +110,12 @@ void framebuffer_get_pointer_space(uint16_t *width, uint16_t *height);
 void framebuffer_pointer_move(int x, int y);
 void framebuffer_pointer_set_visible(bool visible);
 
+/* -- Window compositor support (graphics mode) -- */
+
+// Repaint the console cells under a pixel rectangle (from the shadow cell grid)
+void framebuffer_redraw_pixels(int x, int y, int w, int h);
+// Take the mouse pointer off the screen if it overlaps the rectangle; true if it was
+bool framebuffer_pointer_hide_over(int x, int y, int w, int h);
+void framebuffer_pointer_show(void);
+
 #endif

@@ -18,7 +18,10 @@
 #include "header/kernel/splash.h"
 #include "header/kernel/statusbar.h"
 #include "header/kernel/user.h"
+#include "header/process/process.h"
+#include "header/process/scheduler.h"
 #include "header/stdlib/string.h"
+#include "header/net/net.h"
 
 #ifdef COSMOS_FORCE_TEXT_MODE
 #define PREFER_GRAPHICS false
@@ -119,6 +122,9 @@ void kernel_setup(void) {
     bool mouse = mouse_init(pointer_w, pointer_h);
     serial_printf("[boot] ps/2 mouse: %s\n", mouse ? (mouse_has_wheel() ? "wheel mouse" : "present") : "absent");
     splash_step(mouse ? "PS/2 mouse detected (IRQ12)" : "No PS/2 mouse", 40);
+    bool network = net_init();
+    serial_printf("[boot] network: %s\n", network ? "RTL8139, 10.0.2.15/24" : "no RTL8139 card");
+    splash_step(network ? "RTL8139 network card: 10.0.2.15 (UDP / ICMP)" : "No network card", 50);
 
     // Chapter 2 + 3.2: the root file system chosen in the GRUB menu, and swap on the same disk
     splash_step(boot_info.root_fs == VFS_EXT2 ? "Mounting EXT2 root..." : "Mounting CosmoFS root...", 60);
@@ -128,9 +134,16 @@ void kernel_setup(void) {
     splash_end(1200);
     statusbar_init();
 
-    // Chapter 3.3: Task State Segment, then jump into the shell (ring 3)
+    // Chapter 3.3: Task State Segment
     gdt_install_tss();
     set_tss_register();
+
+    // Set TSS.esp0 for interprivilege interrupt. There is a single kernel stack: every
+    // ring 3 -> ring 0 switch starts at its top, so a context switch can abandon it safely
     set_tss_kernel_current_stack();
-    user_launch_shell();
+
+    // Chapter 4: create init process (the shell, book 4.1.4) and execute it (book 4.2.3)
+    user_start_init();
+    scheduler_init();
+    scheduler_switch_to_next_process();
 }

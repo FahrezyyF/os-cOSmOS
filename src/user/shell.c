@@ -4,338 +4,14 @@
 #define SCRIPT_DEPTH_MAX 8
 #define VAR_NAME_MAX     32
 
-uint8_t screen_cols = 80;
-uint8_t screen_rows = 24;
-
 static char fs_label[16] = "fs";
-
-/* ================================ OUTPUT =========================================== */
-
-static struct Output console_out = {.console = true, .color = C_LIGHT_GRAY};
-struct Output *out = &console_out;
-
-static void flush_console_line(struct Output *o) {
-    if (o->line_len > 0) {
-        console_raw_write(o->line, o->line_len, o->color);
-        o->line_len = 0;
-    }
-}
-
-void out_write(const char *s, uint32_t n) {
-    struct Output *o = out;
-    if (!o->console) {
-        if (o->len + n + 1 > o->cap) {
-            uint32_t cap = o->cap < 256 ? 256 : o->cap;
-            while (cap < o->len + n + 1)
-                cap *= 2;
-            char *bigger = realloc(o->data, cap);
-            if (bigger == NULL)
-                return; // out of memory: the rest of the output is dropped
-            o->data = bigger;
-            o->cap  = cap;
-        }
-        memcpy(o->data + o->len, s, n);
-        o->len += n;
-        o->data[o->len] = '\0';
-        return;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        o->line[o->line_len++] = s[i];
-        if (s[i] == '\n' || o->line_len == sizeof(o->line))
-            flush_console_line(o);
-    }
-}
-
-void out_puts(const char *s) {
-    out_write(s, strlen(s));
-}
-
-void out_putc(char c) {
-    out_write(&c, 1);
-}
-
-void out_printf(const char *fmt, ...) {
-    char buf[512];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if (n < 0)
-        return;
-    out_write(buf, (uint32_t) n < sizeof(buf) ? (uint32_t) n : sizeof(buf) - 1);
-}
-
-void out_color(uint8_t color) {
-    if (!out->console)
-        return;
-    flush_console_line(out);
-    out->color = color;
-}
-
-void out_flush(void) {
-    if (out->console)
-        flush_console_line(out);
-}
-
-bool out_is_console(void) {
-    return out->console;
-}
-
-static void vcolor_print(uint8_t color, const char *fmt, va_list ap) {
-    char buf[512];
-    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-    if (n < 0)
-        return;
-    flush_console_line(&console_out);
-    console_raw_write(buf, (uint32_t) n < sizeof(buf) ? (uint32_t) n : sizeof(buf) - 1, color);
-}
-
-void err_printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vcolor_print(C_LIGHT_RED, fmt, ap);
-    va_end(ap);
-}
-
-void note_printf(uint8_t color, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vcolor_print(color, fmt, ap);
-    va_end(ap);
-}
-
-/* ================================ PATHS ============================================ */
-
-struct PathStack cwd = {.inode = {FS_ROOT}, .depth = 0};
-
-void path_copy(struct PathStack *dst, const struct PathStack *src) {
-    dst->depth    = src->depth;
-    dst->inode[0] = src->inode[0];
-    for (uint32_t i = 1; i <= src->depth; i++) {
-        dst->inode[i] = src->inode[i];
-        dst->name[i]  = strdup(src->name[i]);
-    }
-}
-
-void path_free(struct PathStack *p) {
-    for (uint32_t i = 1; i <= p->depth; i++)
-        free(p->name[i]);
-    p->depth = 0;
-}
-
-static void path_root(struct PathStack *p) {
-    p->depth    = 0;
-    p->inode[0] = FS_ROOT;
-}
-
-static bool path_push(struct PathStack *p, uint32_t inode, const char *name) {
-    if (p->depth >= SHELL_DEPTH_MAX)
-        return false;
-    p->depth++;
-    p->inode[p->depth] = inode;
-    p->name[p->depth]  = strdup(name);
-    return true;
-}
-
-static void path_pop(struct PathStack *p) {
-    if (p->depth > 0)
-        free(p->name[p->depth--]);
-}
-
-void path_format(const struct PathStack *p, char *buf, uint32_t cap) {
-    buf[0] = '\0';
-    if (p->depth == 0) {
-        strcat_s(buf, cap, "/");
-        return;
-    }
-    for (uint32_t i = 1; i <= p->depth; i++) {
-        strcat_s(buf, cap, "/");
-        strcat_s(buf, cap, p->name[i]);
-    }
-}
-
-bool path_contains(const struct PathStack *p, uint32_t inode) {
-    for (uint32_t i = 0; i <= p->depth; i++)
-        if (p->inode[i] == inode)
-            return true;
-    return false;
-}
-
-void path_of_inode(uint32_t inode, char *buf, uint32_t cap) {
-    char *names[SHELL_DEPTH_MAX];
-    uint32_t depth = 0;
-    char name[SHELL_NAME_MAX + 1];
-    while (inode != FS_ROOT && depth < SHELL_DEPTH_MAX) {
-        uint32_t parent;
-        if (!fs_name_of(inode, &parent, name))
-            break;
-        names[depth++] = strdup(name);
-        inode = parent;
-    }
-    buf[0] = '\0';
-    if (depth == 0)
-        strcat_s(buf, cap, "/");
-    while (depth > 0) {
-        strcat_s(buf, cap, "/");
-        strcat_s(buf, cap, names[--depth]);
-        free(names[depth]);
-    }
-}
-
-void cwd_refresh(void) {
-    uint32_t chain[SHELL_DEPTH_MAX + 1];
-    char *names[SHELL_DEPTH_MAX + 1];
-    uint32_t depth = 0, inode = cwd.inode[cwd.depth];
-    char name[SHELL_NAME_MAX + 1];
-    bool ok = true;
-    while (inode != FS_ROOT) {
-        uint32_t parent;
-        if (depth >= SHELL_DEPTH_MAX || !fs_name_of(inode, &parent, name)) {
-            ok = false;
-            break;
-        }
-        chain[depth]   = inode;
-        names[depth++] = strdup(name);
-        inode = parent;
-    }
-    path_free(&cwd);
-    path_root(&cwd);
-    if (ok) {
-        while (depth > 0) {
-            depth--;
-            path_push(&cwd, chain[depth], names[depth]);
-            free(names[depth]);
-        }
-    } else {
-        while (depth > 0)
-            free(names[--depth]);
-    }
-}
-
-const char *fs_error(const char *op, int8_t code) {
-    if (strcmp(op, "read") == 0) {
-        switch (code) {
-            case 1: return "is a directory";
-            case 2: return "file too large for the buffer";
-            case 3: return "no such file";
-            case 4: return "invalid parent directory";
-        }
-    } else if (strcmp(op, "write") == 0) {
-        switch (code) {
-            case 1: return "already exists";
-            case 2: return "invalid parent directory";
-            case -1: return "invalid name or file system full";
-        }
-    } else if (strcmp(op, "delete") == 0) {
-        switch (code) {
-            case 1: return "no such file or directory";
-            case 2: return "directory not empty";
-            case 3: return "invalid parent directory";
-        }
-    } else if (strcmp(op, "rename") == 0) {
-        switch (code) {
-            case 1: return "no such file or directory";
-            case 2: return "target already exists";
-            case 3: return "invalid directory";
-            case 4: return "cannot move a directory into itself";
-        }
-    }
-    return "unknown error";
-}
-
-bool resolve_path(const char *path, struct Resolved *r, struct PathStack *stack_out, bool quiet) {
-    memset(r, 0, sizeof(*r));
-    struct PathStack st;
-    if (path[0] == '/')
-        path_root(&st);
-    else
-        path_copy(&st, &cwd);
-
-    // Split into components; the last one is the leaf
-    const char *p = path;
-    char comp[SHELL_NAME_MAX + 2];
-    bool have_leaf = false;
-    while (*p != '\0') {
-        while (*p == '/')
-            p++;
-        if (*p == '\0')
-            break;
-        uint32_t n = 0;
-        while (p[n] != '\0' && p[n] != '/')
-            n++;
-        if (n > SHELL_NAME_MAX) {
-            if (!quiet)
-                err_printf("%s: name too long\n", path);
-            path_free(&st);
-            return false;
-        }
-        memcpy(comp, p, n);
-        comp[n] = '\0';
-        p += n;
-        const char *rest = p;
-        while (*rest == '/')
-            rest++;
-        bool last = *rest == '\0';
-
-        if (strcmp(comp, ".") == 0)
-            continue;
-        if (strcmp(comp, "..") == 0) {
-            path_pop(&st);
-            continue;
-        }
-        if (last) {
-            memcpy(r->name, comp, n + 1);
-            have_leaf = true;
-            break;
-        }
-        struct SyscallStat s;
-        if (fs_stat(st.inode[st.depth], comp, (uint8_t) n, &s) != 0 || s.type != SYSCALL_TYPE_DIR) {
-            if (!quiet)
-                err_printf("%s: no such directory: %s\n", path, comp);
-            path_free(&st);
-            return false;
-        }
-        if (!path_push(&st, s.inode, comp)) {
-            if (!quiet)
-                err_printf("%s: path too deep\n", path);
-            path_free(&st);
-            return false;
-        }
-    }
-
-    if (have_leaf) {
-        r->parent = st.inode[st.depth];
-        if (fs_stat(r->parent, r->name, (uint8_t) strlen(r->name), &r->st) == 0) {
-            r->exists = true;
-            r->inode  = r->st.inode;
-            r->type   = r->st.type;
-            if (r->type == SYSCALL_TYPE_DIR)
-                path_push(&st, r->inode, r->name);
-        }
-    } else {
-        // "/", "", "." or ".." at the end: the directory on top of the stack
-        r->exists = true;
-        r->inode  = st.inode[st.depth];
-        r->type   = SYSCALL_TYPE_DIR;
-        r->parent = st.depth > 0 ? st.inode[st.depth - 1] : FS_ROOT;
-        if (st.depth > 0)
-            strncpy(r->name, st.name[st.depth], SHELL_NAME_MAX);
-        fs_stat(r->inode, ".", 1, &r->st);
-        r->st.inode = r->inode;
-        r->st.type  = SYSCALL_TYPE_DIR;
-    }
-    if (stack_out != NULL)
-        *stack_out = st; // ownership of the names moves to the caller
-    else
-        path_free(&st);
-    return true;
-}
 
 /* ================================ VARIABLES ======================================== */
 
 struct Var {
     char  name[VAR_NAME_MAX + 1];
     char *value;
+    bool  exported; // passed to programs in envp (export NAME=value)
 };
 
 static struct Var *vars      = NULL;
@@ -354,7 +30,11 @@ const char *shell_get_var(const char *name) {
     return NULL;
 }
 
+static void path_array_rebuild(const char *value);
+
 void shell_set_var(const char *name, const char *value) {
+    if (strcmp(name, "PATH") == 0)
+        path_array_rebuild(value);
     for (uint32_t i = 0; i < var_count; i++) {
         if (strcmp(vars[i].name, name) == 0) {
             free(vars[i].value);
@@ -372,15 +52,23 @@ void shell_set_var(const char *name, const char *value) {
     }
     strncpy(vars[var_count].name, name, VAR_NAME_MAX);
     vars[var_count].name[VAR_NAME_MAX] = '\0';
-    vars[var_count].value = strdup(value);
+    vars[var_count].value    = strdup(value);
+    vars[var_count].exported = false;
     var_count++;
 }
 
+static void environment_save(void);
+
 void shell_unset_var(const char *name) {
+    if (strcmp(name, "PATH") == 0)
+        path_array_rebuild("");
     for (uint32_t i = 0; i < var_count; i++) {
         if (strcmp(vars[i].name, name) == 0) {
+            bool was_exported = vars[i].exported;
             free(vars[i].value);
             vars[i] = vars[--var_count];
+            if (was_exported)
+                environment_save();
             return;
         }
     }
@@ -392,6 +80,200 @@ void shell_print_vars(void) {
         out_puts(vars[i].value); // values have no length limit
         out_putc('\n');
     }
+}
+
+/* ================================ ENVIRONMENT (bonus: PATH) ====================== */
+
+#define ENVIRONMENT_FILE "/etc/environment"
+#define DEFAULT_PATH     "/bin:/apps"
+
+/**
+ * PATH as a dynamic array (bonus: PATH array dinamis): every directory is a heap string,
+ * the array doubles its capacity with realloc() when it is full. `path` dumps it.
+ */
+static struct {
+    char   **dirs;
+    uint32_t count;
+    uint32_t capacity;
+    uint32_t grows;
+} path_array = {NULL, 0, 0, 0};
+
+static void path_array_clear(void) {
+    for (uint32_t i = 0; i < path_array.count; i++)
+        free(path_array.dirs[i]);
+    path_array.count = 0;
+}
+
+static bool path_array_push(const char *dir, uint32_t len) {
+    if (len == 0)
+        return true;
+    if (path_array.count == path_array.capacity) {
+        uint32_t cap = path_array.capacity == 0 ? 2 : path_array.capacity * 2;
+        char **bigger = realloc(path_array.dirs, cap * sizeof(char*));
+        if (bigger == NULL)
+            return false;
+        path_array.dirs     = bigger;
+        path_array.capacity = cap;
+        path_array.grows++;
+    }
+    path_array.dirs[path_array.count++] = strndup(dir, len);
+    return true;
+}
+
+static void path_array_rebuild(const char *value) {
+    path_array_clear();
+    const char *p = value;
+    while (*p != '\0') {
+        const char *colon = strchr(p, ':');
+        uint32_t len = colon ? (uint32_t) (colon - p) : (uint32_t) strlen(p);
+        path_array_push(p, len);
+        p += len;
+        if (*p == ':')
+            p++;
+    }
+}
+
+static char *path_array_join(void) {
+    uint32_t total = 1;
+    for (uint32_t i = 0; i < path_array.count; i++)
+        total += (uint32_t) strlen(path_array.dirs[i]) + 1;
+    char *joined = malloc(total);
+    if (joined == NULL)
+        return NULL;
+    joined[0] = '\0';
+    for (uint32_t i = 0; i < path_array.count; i++) {
+        if (i > 0)
+            strcat_s(joined, total, ":");
+        strcat_s(joined, total, path_array.dirs[i]);
+    }
+    return joined;
+}
+
+static struct Var *find_var(const char *name) {
+    for (uint32_t i = 0; i < var_count; i++)
+        if (strcmp(vars[i].name, name) == 0)
+            return &vars[i];
+    return NULL;
+}
+
+static bool environment_loading = false;
+
+// Exported variables survive a reboot in /etc/environment (book 4.3.5: persistent PATH)
+static void environment_save(void) {
+    if (environment_loading)
+        return;
+    struct StrBufLite { char *data; uint32_t len, cap; } b = {NULL, 0, 0};
+    for (uint32_t i = 0; i < var_count; i++) {
+        if (!vars[i].exported || strcmp(vars[i].name, "PWD") == 0)
+            continue;
+        uint32_t need = (uint32_t) (strlen(vars[i].name) + strlen(vars[i].value) + 3);
+        if (b.len + need > b.cap) {
+            uint32_t cap = b.cap ? b.cap * 2 : 128;
+            while (cap < b.len + need)
+                cap *= 2;
+            char *bigger = realloc(b.data, cap);
+            if (bigger == NULL)
+                break;
+            b.data = bigger;
+            b.cap  = cap;
+        }
+        b.len += (uint32_t) snprintf(b.data + b.len, b.cap - b.len, "%s=%s\n", vars[i].name, vars[i].value);
+    }
+    struct SyscallStat st;
+    if (fs_stat(FS_ROOT, "etc", 3, &st) != 0)
+        fs_mkdir(FS_ROOT, "etc", 3);
+    write_whole_file(ENVIRONMENT_FILE, b.data ? b.data : "", b.len, false, "export");
+    free(b.data);
+}
+
+void shell_export_var(const char *name, const char *value) {
+    if (value != NULL)
+        shell_set_var(name, value);
+    struct Var *v = find_var(name);
+    if (v == NULL) {
+        shell_set_var(name, "");
+        v = find_var(name);
+    }
+    if (v != NULL)
+        v->exported = true;
+    environment_save();
+}
+
+static void environment_load(void) {
+    char *data;
+    uint32_t len;
+    struct Resolved r;
+    environment_loading = true;
+    bool have_file = resolve_path(ENVIRONMENT_FILE, &r, NULL, true) && r.exists && r.type == SYSCALL_TYPE_FILE;
+    if (have_file && read_whole_file(ENVIRONMENT_FILE, &data, &len, "shell")) {
+        char *line = data;
+        while (line < data + len) {
+            char *nl = strchr(line, '\n');
+            if (nl != NULL)
+                *nl = '\0';
+            char *eq = strchr(line, '=');
+            if (eq != NULL && eq != line && eq - line <= VAR_NAME_MAX) {
+                *eq = '\0';
+                shell_export_var(line, eq + 1);
+            }
+            if (nl == NULL)
+                break;
+            line = nl + 1;
+        }
+        free(data);
+    }
+    environment_loading = false;
+    if (shell_get_var("PATH") == NULL) {
+        shell_export_var("PATH", DEFAULT_PATH); // first boot: create /etc/environment
+    }
+}
+
+// envp for a new program: NAME=value of every exported variable (+ PWD), heap strings
+static char **environment_build(int *count) {
+    char **envp = calloc(var_count + 2, sizeof(char*));
+    int n = 0;
+    if (envp == NULL) {
+        *count = 0;
+        return NULL;
+    }
+    for (uint32_t i = 0; i < var_count && n < 30; i++) {
+        if (!vars[i].exported)
+            continue;
+        uint32_t len = (uint32_t) (strlen(vars[i].name) + strlen(vars[i].value) + 2);
+        envp[n] = malloc(len);
+        if (envp[n] != NULL)
+            snprintf(envp[n++], len, "%s=%s", vars[i].name, vars[i].value);
+    }
+    char pwd[SHELL_PATH_MAX];
+    path_format(&cwd, pwd, sizeof(pwd));
+    uint32_t len = (uint32_t) strlen(pwd) + 5;
+    envp[n] = malloc(len);
+    if (envp[n] != NULL)
+        snprintf(envp[n++], len, "PWD=%s", pwd);
+    *count = n;
+    return envp;
+}
+
+static void environment_free(char **envp, int count) {
+    for (int i = 0; i < count; i++)
+        free(envp[i]);
+    free(envp);
+}
+
+const char *shell_path_value(void) {
+    return shell_get_var("PATH");
+}
+
+bool shell_find_program(const char *name, struct Resolved *r) {
+    if (strchr(name, '/') != NULL)
+        return resolve_path(name, r, NULL, true) && r->exists && r->type == SYSCALL_TYPE_FILE;
+    char path[SHELL_PATH_MAX];
+    for (uint32_t i = 0; i < path_array.count; i++) {
+        snprintf(path, sizeof(path), "%s/%s", path_array.dirs[i], name);
+        if (resolve_path(path, r, NULL, true) && r->exists && r->type == SYSCALL_TYPE_FILE)
+            return true;
+    }
+    return false;
 }
 
 static bool is_var_start(char c) {
@@ -658,6 +540,20 @@ static void complete(void) {
         for (uint32_t i = 0; i < shell_command_count; i++)
             if (strncmp(shell_commands[i].name, word, wlen) == 0)
                 cand_add(&cands, shell_commands[i].name);
+        // Programs in the PATH directories (hello, clock, snake, ...)
+        for (uint32_t d = 0; d < path_array.count; d++) {
+            struct Resolved r;
+            if (!resolve_path(path_array.dirs[d], &r, NULL, true) || !r.exists || r.type != SYSCALL_TYPE_DIR)
+                continue;
+            struct DirEntry *entries;
+            uint32_t count;
+            if (fs_list(r.inode, &entries, &count) != 0)
+                continue;
+            for (uint32_t i = 0; i < count; i++)
+                if (entries[i].type == SYSCALL_TYPE_FILE && strncmp(entries[i].name, word, wlen) == 0)
+                    cand_add(&cands, entries[i].name);
+            free(entries);
+        }
     }
     // File names: in the directory part of the word (or the working directory). Every
     // candidate is a bare name, so the typed part to complete is what follows the last '/'
@@ -727,12 +623,31 @@ static void complete(void) {
  * scrolling (Page Up / Page Down, mouse wheel in the kernel).
  * @return false when the line was cancelled with Ctrl+C
  */
+// Did another process print while the line was being edited (background jobs)?
+static bool ed_cursor_moved(void) {
+    uint8_t row, col;
+    console_get_cursor(&row, &col);
+    uint32_t pos = ed.col0 + ed.cursor;
+    int32_t expected = ed.row0 + (int32_t) (pos / screen_cols);
+    if (expected < 0)
+        expected = 0;
+    return row != (uint8_t) expected || col != (uint8_t) (pos % screen_cols);
+}
+
 static bool read_line(void) {
     ed_begin();
     uint32_t browse = history_count;
     char *pending = NULL; // the line being typed while browsing the history
     for (;;) {
         char c = getchar_wait();
+        if (ed_cursor_moved()) { // redisplay the prompt and the line below the foreign output
+            uint8_t row, col;
+            console_get_cursor(&row, &col);
+            if (col != 0)
+                out_putc('\n');
+            out_flush();
+            ed_reprint();
+        }
         if (c == '\n') {
             ed_place(ed.len);
             out_putc('\n');
@@ -825,7 +740,7 @@ static bool read_line(void) {
 
 /* ================================ PARSER =========================================== */
 
-enum TokenType { T_WORD, T_PIPE, T_OUT, T_APPEND, T_IN, T_SEMI, T_AND, T_OR };
+enum TokenType { T_WORD, T_PIPE, T_OUT, T_APPEND, T_IN, T_SEMI, T_AND, T_OR, T_BG };
 
 struct Token {
     enum TokenType type;
@@ -838,8 +753,6 @@ struct TokenList {
     uint32_t      cap;
 };
 
-#define GLOB_STAR  '\x01'
-#define GLOB_QMARK '\x02'
 
 struct StrBuf {
     char    *data;
@@ -894,6 +807,11 @@ static void tokens_free(struct TokenList *l) {
 // $NAME, ${NAME}, $?, $#, $0-$9; p points after '$'. Returns characters consumed
 static uint32_t expand_variable(const char *p, struct StrBuf *b) {
     char num[16];
+    if (*p == '$') {
+        snprintf(num, sizeof(num), "%u", getpid());
+        sb_add(b, num, (uint32_t) strlen(num));
+        return 1;
+    }
     if (*p == '?') {
         snprintf(num, sizeof(num), "%d", last_status);
         sb_add(b, num, (uint32_t) strlen(num));
@@ -1002,29 +920,6 @@ static bool tokenize(const char *line, struct TokenList *tokens) {
 }
 
 /* -- Globbing: * and ? in the last path component of a word -- */
-
-bool glob_match(const char *pattern, const char *name) {
-    // Iterative wildcard match with backtracking to the last '*'
-    const char *star = NULL, *resume = NULL;
-    while (*name != '\0') {
-        char pc = *pattern;
-        if (pc == GLOB_STAR || pc == '*') {
-            star   = pattern++;
-            resume = name;
-        } else if (pc == GLOB_QMARK || pc == '?' || pc == *name) {
-            pattern++;
-            name++;
-        } else if (star != NULL) {
-            pattern = star + 1;
-            name    = ++resume;
-        } else {
-            return false;
-        }
-    }
-    while (*pattern == GLOB_STAR || *pattern == '*')
-        pattern++;
-    return *pattern == '\0';
-}
 
 static bool has_glob(const char *s) {
     return strchr(s, GLOB_STAR) != NULL || strchr(s, GLOB_QMARK) != NULL;
@@ -1147,31 +1042,148 @@ static bool is_assignment(const char *word, uint32_t *name_len) {
     return true;
 }
 
-static int run_command(int argc, char **argv, struct Input *in) {
+static bool exec_background = false; // `exec prog &`: the & reaches the exec built-in
+
+static bool ends_with_sh(const char *name) {
+    uint32_t len = (uint32_t) strlen(name);
+    return len > 3 && strcmp(name + len - 3, ".sh") == 0;
+}
+
+/**
+ * Resolution order:
+ *   1. NAME=value assignment
+ *   2. shell built-ins that need the shell's own state (cd, export, exit, history, ...)
+ *   3. a program: "dir/prog" / "./prog" by path, a bare name through the PATH directories
+ *      (book 4.3.5); CEX / ELF files run as separate processes, other files as scripts
+ *   4. the built-in copy of a /bin command (only when /bin is missing or not in PATH)
+ *   5. "x.sh" in the working directory
+ */
+static int run_command(int argc, char **argv, struct Input *in, bool background) {
     if (argc == 0)
         return 0;
     uint32_t name_len;
     if (argc == 1 && is_assignment(argv[0], &name_len)) {
         argv[0][name_len] = '\0';
         shell_set_var(argv[0], argv[0] + name_len + 1);
+        if (find_var(argv[0])->exported)
+            environment_save();
         return 0;
     }
     const struct Command *cmd = find_command(argv[0]);
-    if (cmd != NULL)
-        return cmd->run(argc, argv, in);
-    // ./script.sh, dir/script.sh or script.sh: run it as a shell script
-    uint32_t len = (uint32_t) strlen(argv[0]);
-    if (strchr(argv[0], '/') != NULL || (len > 3 && strcmp(argv[0] + len - 3, ".sh") == 0)) {
-        struct Resolved r;
-        if (resolve_path(argv[0], &r, NULL, true) && r.exists && r.type == SYSCALL_TYPE_FILE)
+    if (cmd != NULL && (cmd->flags & COMMAND_BUILTIN)) {
+        exec_background = background;
+        int status = cmd->run(argc, argv, in);
+        exec_background = false;
+        return status;
+    }
+
+    struct Resolved r;
+    bool has_slash = strchr(argv[0], '/') != NULL;
+    if (shell_find_program(argv[0], &r)) {
+        if (ends_with_sh(r.name))
             return shell_run_script(argv[0], argc, argv);
-        if (r.exists && r.type == SYSCALL_TYPE_DIR) {
+        int status = shell_exec_program(argc, argv, in, background, false);
+        if (status != -PROCESS_NOT_EXECUTABLE)
+            return status;
+        // No CEX / ELF header: a "#!" script runs in this shell, anything else is refused
+        char *data = NULL;
+        uint32_t len = 0;
+        bool script = false;
+        if (fs_read_file(r.parent, r.name, (uint8_t) strlen(r.name), &data, &len) == 0) {
+            script = len >= 2 && data[0] == '#' && data[1] == '!';
+            free(data);
+        }
+        if (script)
+            return shell_run_script(argv[0], argc, argv);
+        err_printf("%s: not an executable (no CEX / ELF header; `exec` runs flat binaries)\n", argv[0]);
+        return 126;
+    }
+    if (has_slash) {
+        if (resolve_path(argv[0], &r, NULL, true) && r.exists && r.type == SYSCALL_TYPE_DIR) {
             err_printf("%s: is a directory\n", argv[0]);
             return 126;
         }
+    } else if (cmd != NULL) {
+        return cmd->run(argc, argv, in); // built-in fallback of a /bin program
+    } else if (ends_with_sh(argv[0]) && resolve_path(argv[0], &r, NULL, true) && r.exists &&
+               r.type == SYSCALL_TYPE_FILE) {
+        return shell_run_script(argv[0], argc, argv);
     }
     err_printf("%s: command not found (try `help`)\n", argv[0]);
     return 127;
+}
+
+/* ================================ PROGRAMS (chapter 4) ============================= */
+
+/**
+ * Run a program as a separate process. Pipeline input goes through a kernel pipe on its
+ * stdin; when the shell is capturing (a later pipeline stage or `> file` follows), its
+ * stdout is a pipe the shell drains, otherwise it writes to the console itself. The shell
+ * blocks in SYS_WAIT until the program ends (Ctrl+C kills it), unless `background`.
+ */
+int shell_exec_program(int argc, char **argv, struct Input *in, bool background, bool allow_flat) {
+    struct Resolved r;
+    if (!shell_find_program(argv[0], &r)) {
+        err_printf("%s: no such program (PATH=%s)\n", argv[0], shell_get_var("PATH") ? shell_get_var("PATH") : "");
+        return 127;
+    }
+    int32_t in_fds[2]  = {-1, -1};
+    int32_t out_fds[2] = {-1, -1};
+    bool feed    = in != NULL && in->present;
+    bool capture = !out->console;
+    if ((feed && pipe_open(in_fds) != 0) || (capture && pipe_open(out_fds) != 0)) {
+        err_printf("%s: cannot create a pipe\n", argv[0]);
+        if (in_fds[0] >= 0) { fd_close(in_fds[0]); fd_close(in_fds[1]); }
+        return 1;
+    }
+    if (feed) {
+        fd_write_all(in_fds[1], in->data, in->len, 0);
+        fd_close(in_fds[1]); // the program sees end of file after the data
+    }
+    int envc;
+    char **envp = environment_build(&envc);
+    out_flush();
+    int32_t pid = process_spawn_ex(r.parent, r.name, (uint8_t) strlen(r.name), argc, argv, envc, envp,
+                                   in_fds[0], capture ? out_fds[1] : -1, !background, !allow_flat);
+    environment_free(envp, envc);
+    if (in_fds[0] >= 0)
+        fd_close(in_fds[0]);
+    if (out_fds[1] >= 0)
+        fd_close(out_fds[1]);
+    if (pid < 0) {
+        if (out_fds[0] >= 0)
+            fd_close(out_fds[0]);
+        if (pid == -PROCESS_NOT_EXECUTABLE && !allow_flat)
+            return -PROCESS_NOT_EXECUTABLE;
+        err_printf("%s: %s\n", argv[0], process_error_name(pid));
+        return 126;
+    }
+    if (background) {
+        note_printf(C_DARK_GRAY, "[%d] %s running in the background (`jobs`, `kill %d`)\n", pid, argv[0], pid);
+        return 0;
+    }
+    if (capture) {
+        uint32_t len;
+        char *data = fd_read_all(out_fds[0], &len); // until the program closes stdout (exits)
+        fd_close(out_fds[0]);
+        if (data != NULL) {
+            out_write(data, len);
+            free(data);
+        }
+    }
+    int32_t status = 0;
+    process_wait((uint32_t) pid, &status, false);
+    if (status == 137)
+        note_printf(C_LIGHT_RED, "^C [%d] %s killed\n", pid, argv[0]);
+    else if (status == 139)
+        note_printf(C_LIGHT_RED, "[%d] %s crashed\n", pid, argv[0]);
+    else if (status == -2) {
+        note_printf(C_DARK_GRAY, "[%d] %s continues in the background\n", pid, argv[0]);
+        status = 0;
+    }
+    cwd_refresh(); // the program may have renamed a directory of the working directory
+    shell_update_status();
+    return status;
 }
 
 struct Stage {
@@ -1188,7 +1200,7 @@ static void stage_free(struct Stage *s) {
 }
 
 // tokens[from, to) hold one pipeline: stage (| stage)*
-static int run_pipeline(struct Token *tokens, uint32_t from, uint32_t to) {
+static int run_pipeline(struct Token *tokens, uint32_t from, uint32_t to, bool background) {
     // Split into stages
     uint32_t stage_count = 1;
     for (uint32_t i = from; i < to; i++)
@@ -1254,7 +1266,10 @@ static int run_pipeline(struct Token *tokens, uint32_t from, uint32_t to) {
         bool last = i + 1 == stage_count;
         struct Output capture = {.console = false};
         out = (!last || st->out_file != NULL) ? &capture : &console_out;
-        status = run_command((int) st->args.argc, st->args.argv, &input);
+        bool bg = background && stage_count == 1 && st->out_file == NULL && st->in_file == NULL;
+        if (background && !bg && i == 0)
+            err_printf("&: only a single program without redirection can run in the background\n");
+        status = run_command((int) st->args.argc, st->args.argv, &input, bg);
         out_flush();
         out_color(C_LIGHT_GRAY);
         out = &console_out;
@@ -1314,10 +1329,11 @@ static void scan_segment(const char *p, const char **end, enum TokenType *op, co
         if (c == '#' && word_start)
             break; // comment: the rest of the line is ignored
         bool and = c == '&' && p[1] == '&', or = c == '|' && p[1] == '|';
-        if (c == ';' || and || or) {
+        bool bg  = c == '&' && !and; // `prog &` runs the program in the background
+        if (c == ';' || and || or || bg) {
             *end    = p;
-            *op     = c == ';' ? T_SEMI : (and ? T_AND : T_OR);
-            *next   = p + (c == ';' ? 1 : 2);
+            *op     = c == ';' ? T_SEMI : (and ? T_AND : (or ? T_OR : T_BG));
+            *next   = p + ((c == ';' || bg) ? 1 : 2);
             *at_end = false;
             return;
         }
@@ -1350,21 +1366,22 @@ static int run_line(const char *line) {
         if (segment == NULL)
             return 1;
         if (!is_blank(segment)) {
-            bool run = pending == T_SEMI || (pending == T_AND && status == 0) || (pending == T_OR && status != 0);
+            bool run = pending == T_SEMI || pending == T_BG || (pending == T_AND && status == 0) ||
+                       (pending == T_OR && status != 0);
             if (run) {
                 struct TokenList tokens = {0};
                 if (!tokenize(segment, &tokens))
                     status = 2;
                 else if (tokens.count > 0)
-                    status = run_pipeline(tokens.items, 0, tokens.count);
+                    status = run_pipeline(tokens.items, 0, tokens.count, op == T_BG);
                 tokens_free(&tokens);
                 last_status = status;
             }
-        } else if (pending != T_SEMI || (op != T_SEMI && !at_end)) {
+        } else if ((pending != T_SEMI && pending != T_BG) || (op != T_SEMI && !at_end)) {
             if (at_end)
                 err_printf("syntax error: unexpected end of line\n");
             else
-                err_printf("syntax error near `%s'\n", op == T_AND ? "&&" : (op == T_OR ? "||" : ";"));
+                err_printf("syntax error near `%s'\n", op == T_AND ? "&&" : (op == T_OR ? "||" : (op == T_BG ? "&" : ";")));
             free(segment);
             last_status = 2;
             return 2;
@@ -1374,6 +1391,179 @@ static int run_line(const char *line) {
             break;
         pending = op;
         p = next;
+    }
+    return status;
+}
+
+/* ================================ BUILT-INS (chapter 4) ============================ */
+
+// exec [-b] <program> [args...]: run a program from the file system (book 4.3.2)
+int cmd_exec(int argc, char **argv, struct Input *in) {
+    int first = 1;
+    bool background = false;
+    if (first < argc && strcmp(argv[first], "-b") == 0) {
+        background = true;
+        first++;
+    }
+    if (first >= argc) {
+        err_printf("usage: exec [-b] <program> [args]...   (-b or a trailing & = background)\n");
+        return 2;
+    }
+    struct Resolved r;
+    if (!shell_find_program(argv[first], &r)) {
+        err_printf("exec: %s: no such program\n", argv[first]);
+        return 127;
+    }
+    return shell_exec_program(argc - first, argv + first, in, background || exec_background, true);
+}
+
+// export [NAME[=value]]...: environment variables of programs, saved in /etc/environment
+int cmd_export(int argc, char **argv, struct Input *in) {
+    (void) in;
+    if (argc == 1) {
+        for (uint32_t i = 0; i < var_count; i++)
+            if (vars[i].exported) {
+                out_printf("export %s=", vars[i].name);
+                out_puts(vars[i].value);
+                out_putc('\n');
+            }
+        return 0;
+    }
+    int status = 0;
+    for (int i = 1; i < argc; i++) {
+        char *eq = strchr(argv[i], '=');
+        uint32_t n = eq ? (uint32_t) (eq - argv[i]) : (uint32_t) strlen(argv[i]);
+        char name[VAR_NAME_MAX + 1];
+        if (n == 0 || n > VAR_NAME_MAX || !is_var_start(argv[i][0])) {
+            err_printf("export: %s: not a valid name\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        memcpy(name, argv[i], n);
+        name[n] = '\0';
+        shell_export_var(name, eq ? eq + 1 : NULL);
+    }
+    return status;
+}
+
+int cmd_env(int argc, char **argv, struct Input *in) {
+    (void) argc;
+    (void) argv;
+    (void) in;
+    int envc;
+    char **envp = environment_build(&envc);
+    for (int i = 0; i < envc; i++)
+        out_printf("%s\n", envp[i]);
+    environment_free(envp, envc);
+    return 0;
+}
+
+// path [add <dir> | remove <dir>]: show / edit PATH through its dynamic array
+int cmd_path(int argc, char **argv, struct Input *in) {
+    (void) in;
+    if (argc == 3 && (strcmp(argv[1], "add") == 0 || strcmp(argv[1], "remove") == 0)) {
+        const char *dir = argv[2];
+        if (dir[0] != '/') {
+            err_printf("path: %s: use an absolute directory\n", dir);
+            return 1;
+        }
+        if (strcmp(argv[1], "add") == 0) {
+            path_array_push(dir, (uint32_t) strlen(dir));
+        } else {
+            bool found = false;
+            for (uint32_t i = 0; i < path_array.count; i++) {
+                if (strcmp(path_array.dirs[i], dir) == 0) {
+                    free(path_array.dirs[i]);
+                    memmove(&path_array.dirs[i], &path_array.dirs[i + 1], (path_array.count - i - 1) * sizeof(char*));
+                    path_array.count--;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                err_printf("path: %s is not in PATH\n", dir);
+                return 1;
+            }
+        }
+        char *joined = path_array_join();
+        if (joined != NULL) {
+            shell_export_var("PATH", joined); // rebuilds the array from the new value, saves it
+            free(joined);
+        }
+    } else if (argc != 1) {
+        err_printf("usage: path [add <dir> | remove <dir>]\n");
+        return 2;
+    }
+    out_printf("PATH=%s\n", shell_get_var("PATH") ? shell_get_var("PATH") : "");
+    out_printf("dynamic array @0x%08x: count %u, capacity %u (grown %u times, saved in " ENVIRONMENT_FILE ")\n",
+               (uint32_t) path_array.dirs, path_array.count, path_array.capacity, path_array.grows);
+    for (uint32_t i = 0; i < path_array.capacity; i++) {
+        if (i < path_array.count)
+            out_printf("  [%u] @0x%08x -> 0x%08x \"%s\"\n", i, (uint32_t) &path_array.dirs[i],
+                       (uint32_t) path_array.dirs[i], path_array.dirs[i]);
+        else
+            out_printf("  [%u] @0x%08x    (free)\n", i, (uint32_t) &path_array.dirs[i]);
+    }
+    return 0;
+}
+
+// jobs: programs started by this shell that still run (background ones, mostly)
+int cmd_jobs(int argc, char **argv, struct Input *in) {
+    (void) argc;
+    (void) argv;
+    (void) in;
+    struct SyscallProcessInfo *list = calloc(32, sizeof(*list));
+    if (list == NULL)
+        return 1;
+    uint32_t n = process_list(list, 32), me = getpid(), shown = 0;
+    for (uint32_t i = 0; i < n && i < 32; i++) {
+        if (list[i].ppid != me)
+            continue;
+        out_printf("[%u] %-8s %s\n", list[i].pid, list[i].state, list[i].cmdline);
+        shown++;
+    }
+    if (shown == 0 && out_is_console())
+        note_printf(C_DARK_GRAY, "no jobs\n");
+    free(list);
+    return 0;
+}
+
+// wait [pid]: block until a background program (or all of them) ends
+int cmd_wait(int argc, char **argv, struct Input *in) {
+    (void) in;
+    uint32_t pid = 0;
+    if (argc > 1 && !parse_uint(argv[1], &pid)) {
+        err_printf("usage: wait [pid]\n");
+        return 2;
+    }
+    int32_t status = 0, r;
+    do {
+        r = process_wait(pid, &status, false);
+        if (r > 0 && out_is_console())
+            note_printf(C_DARK_GRAY, "[%d] done, status %d\n", r, status);
+    } while (r > 0 && pid == 0);
+    return pid != 0 && r < 0 ? 127 : status;
+}
+
+// type <name>...: how the shell runs a name
+int cmd_type(int argc, char **argv, struct Input *in) {
+    (void) in;
+    int status = 0;
+    for (int i = 1; i < argc; i++) {
+        const struct Command *cmd = find_command(argv[i]);
+        struct Resolved r;
+        if (cmd != NULL && (cmd->flags & COMMAND_BUILTIN)) {
+            out_printf("%s is a shell built-in\n", argv[i]);
+        } else if (shell_find_program(argv[i], &r)) {
+            char where[SHELL_PATH_MAX];
+            path_of_inode(r.parent, where, sizeof(where));
+            out_printf("%s is %s%s%s (separate program)\n", argv[i], where, strcmp(where, "/") ? "/" : "", r.name);
+        } else if (cmd != NULL) {
+            out_printf("%s is a built-in fallback (no /bin/%s in PATH)\n", argv[i], argv[i]);
+        } else {
+            err_printf("type: %s: not found\n", argv[i]);
+            status = 1;
+        }
     }
     return status;
 }
@@ -1428,16 +1618,18 @@ static void banner(void) {
     note_printf(C_LIGHT_BLUE, " / __| | | \\___ \\| |\\/| | | | \\___ \\\n");
     note_printf(C_LIGHT_BLUE, "| (__| |_| |___) | |  | | |_| |___) |\n");
     note_printf(C_LIGHT_MAGENTA, " \\___|\\___/|____/|_|  |_|\\___/|____/\n\n");
-    note_printf(C_WHITE, "cOSmOS shell - running in user mode (ring 3) on the %s root file system.\n", fs_label);
-    note_printf(C_DARK_GRAY, "`help` lists the commands. Tab completes, Up/Down recalls, PgUp/PgDn or the wheel scrolls.\n\n");
+    note_printf(C_WHITE, "cOSmOS shell (pid %u, init) - user mode, %s root file system, multitasking.\n", getpid(), fs_label);
+    note_printf(C_DARK_GRAY, "`help` lists the commands, `ls /bin /apps` the programs. `clock` starts the clock, `ps` lists processes.\n");
+    note_printf(C_DARK_GRAY, "Tab completes, Up/Down recalls, PgUp/PgDn or the wheel scrolls, Ctrl+C stops a program.\n\n");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void) argc;
+    (void) argv;
     syscall(SYS_KEYBOARD_ACTIVATE, 0, 0, 0);
-    struct SyscallScreenInfo screen;
-    console_screen_info(&screen);
-    screen_cols = screen.cols;
-    screen_rows = screen.rows;
+    shlib_init();
+    cwd_sync_kernel();
+    environment_load(); // PATH and the other exported variables from /etc/environment
 
     struct SyscallSysInfo info;
     get_sysinfo(&info);

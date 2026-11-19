@@ -234,3 +234,18 @@ uint32_t graphics_blend(uint32_t a, uint32_t b, uint8_t t) {
     uint32_t bl = ((a & 0xFF) * (255u - t) + (b & 0xFF) * t) / 255u;
     return RGB(r, g, bl);
 }
+
+void graphics_blit_row(int x, int y, const uint32_t *src, int count) {
+    if (!active || y < 0 || y >= screen_h || count <= 0)
+        return;
+    if (x < 0) {
+        src   -= x;
+        count += x;
+        x      = 0;
+    }
+    if (x + count > screen_w)
+        count = screen_w - x;
+    if (count <= 0)
+        return;
+    copy32_forward(&lfb[(uint32_t) y * screen_w + (uint32_t) x], src, (uint32_t) count);
+}

@@ -1,29 +1,44 @@
+/*
+ * cOSmOS user programs (book 4.3.4 / 4.3.6 linker, extended).
+ *
+ * The output is an ELF32 executable: /bin commands are installed as ELF, the shell and the
+ * applications are converted to CEX by src/external/elf2cex.c (bonus: simple executable
+ * file format). Every section starts on its own 4 KiB page (a multiple of the 2 KiB
+ * minimum of the CEX format) so the loader can map .text / .rodata read-only and
+ * .data / .bss writable. Page 0 is left out: a NULL pointer dereference faults.
+ */
 ENTRY(_start)
 
+PHDRS {
+    text   PT_LOAD FLAGS(5);  /* R + X */
+    rodata PT_LOAD FLAGS(4);  /* R     */
+    data   PT_LOAD FLAGS(6);  /* R + W (.data and .bss) */
+}
+
 SECTIONS {
-    . = 0x00000000; /* Assuming OS will load this program at virtual address */
+    . = 0x1000;
 
-    .text ALIGN(4): {
-        *crt0.s.o(.text)  /* Put the entrypoint in the front of executable */
-        *(.text)
-    }
+    .text : ALIGN(4K) {
+        *crt0.s.o(.text)          /* the entry point first */
+        *(.text .text.*)
+    } :text
 
-    /* .rodata before .data / .bss so the zero-filled .bss is not stored in the flat binary
-       (the kernel maps fresh zero pages on demand) */
-    .rodata ALIGN(4): {
-        *(.rodata*)
-    }
+    .rodata : ALIGN(4K) {
+        *(.rodata .rodata.*)
+    } :rodata
 
-    .data ALIGN(4): {
-        *(.data)
-    }
+    .data : ALIGN(4K) {
+        *(.data .data.*)
+    } :data
 
-    .bss ALIGN(4): { /* 9 May Edit: Fixes for static storage variables */
+    .bss : ALIGN(4K) {
         *(COMMON)
-        *(.bss)
-    }
+        *(.bss .bss.*)
+    } :data
+
     _linker_user_program_end = .;
-    ASSERT ((_linker_user_program_end <= 1 * 1024 * 1024), "Error: User program linking result is more than 1 MiB")
+    /* The image must end below the 1 MiB stack that sits under 0x400000 */
+    ASSERT ((_linker_user_program_end <= 3 * 1024 * 1024), "Error: user program does not fit below the stack (3 MiB)")
 
     /DISCARD/ : {
         *(.comment)

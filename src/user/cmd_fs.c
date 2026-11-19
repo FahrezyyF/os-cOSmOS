@@ -264,7 +264,7 @@ static int list_path(const char *path, bool long_format, bool all, bool header) 
     return 0;
 }
 
-static int cmd_ls(int argc, char **argv, struct Input *in) {
+int cmd_ls(int argc, char **argv, struct Input *in) {
     (void) in;
     bool f[128];
     int first = parse_flags(argc, argv, "la", f);
@@ -283,7 +283,7 @@ static int cmd_ls(int argc, char **argv, struct Input *in) {
 
 static struct PathStack previous_dir = {.inode = {FS_ROOT}, .depth = 0};
 
-static int cmd_cd(int argc, char **argv, struct Input *in) {
+int cmd_cd(int argc, char **argv, struct Input *in) {
     (void) in;
     if (argc > 2) {
         err_printf("cd: too many arguments\n");
@@ -308,11 +308,12 @@ static int cmd_cd(int argc, char **argv, struct Input *in) {
     path_free(&previous_dir);
     previous_dir = cwd;
     cwd = target;
+    cwd_sync_kernel(); // programs started from now on inherit the new directory
     shell_update_status();
     return 0;
 }
 
-static int cmd_pwd(int argc, char **argv, struct Input *in) {
+int cmd_pwd(int argc, char **argv, struct Input *in) {
     (void) argc;
     (void) argv;
     (void) in;
@@ -371,7 +372,7 @@ static int make_dir(const char *path, bool parents) {
     return 0;
 }
 
-static int cmd_mkdir(int argc, char **argv, struct Input *in) {
+int cmd_mkdir(int argc, char **argv, struct Input *in) {
     (void) in;
     bool f[128];
     int first = parse_flags(argc, argv, "p", f);
@@ -387,7 +388,7 @@ static int cmd_mkdir(int argc, char **argv, struct Input *in) {
     return status;
 }
 
-static int cmd_touch(int argc, char **argv, struct Input *in) {
+int cmd_touch(int argc, char **argv, struct Input *in) {
     (void) in;
     if (argc < 2) {
         err_printf("usage: touch <file>...\n");
@@ -425,7 +426,7 @@ static void write_numbered(const char *data, uint32_t len, uint32_t *line_no, bo
     }
 }
 
-static int cmd_cat(int argc, char **argv, struct Input *in) {
+int cmd_cat(int argc, char **argv, struct Input *in) {
     bool f[128];
     int first = parse_flags(argc, argv, "n", f);
     if (first < 0)
@@ -564,7 +565,7 @@ static bool destination(const char *dst, const char *src_leaf, bool many, uint32
     return true;
 }
 
-static int cmd_cp(int argc, char **argv, struct Input *in) {
+int cmd_cp(int argc, char **argv, struct Input *in) {
     (void) in;
     bool f[128];
     int first = parse_flags(argc, argv, "rR", f);
@@ -645,7 +646,7 @@ static int remove_entry(uint32_t parent, const char *name, uint8_t type, uint32_
     return 0;
 }
 
-static int cmd_rm(int argc, char **argv, struct Input *in) {
+int cmd_rm(int argc, char **argv, struct Input *in) {
     (void) in;
     bool f[128];
     int first = parse_flags(argc, argv, "rRf", f);
@@ -690,7 +691,7 @@ static int cmd_rm(int argc, char **argv, struct Input *in) {
     return status;
 }
 
-static int cmd_mv(int argc, char **argv, struct Input *in) {
+int cmd_mv(int argc, char **argv, struct Input *in) {
     (void) in;
     if (argc < 3) {
         err_printf("usage: mv <source>... <destination>\n");
@@ -784,7 +785,7 @@ static bool has_wildcard(const char *s) {
     return strchr(s, '*') != NULL || strchr(s, '?') != NULL;
 }
 
-static int cmd_find(int argc, char **argv, struct Input *in) {
+int cmd_find(int argc, char **argv, struct Input *in) {
     (void) in;
     // find <name> | find <dir> <name> | find <dir> -name <pattern>
     const char *dir = NULL, *name = NULL;
@@ -895,7 +896,7 @@ static void tree_walk(uint32_t dir, char *prefix, uint32_t prefix_len, uint32_t 
     free(entries);
 }
 
-static int cmd_tree(int argc, char **argv, struct Input *in) {
+int cmd_tree(int argc, char **argv, struct Input *in) {
     (void) in;
     const char *path = argc > 1 ? argv[1] : ".";
     struct Resolved r;
@@ -915,7 +916,7 @@ static int cmd_tree(int argc, char **argv, struct Input *in) {
     return 0;
 }
 
-static int cmd_stat(int argc, char **argv, struct Input *in) {
+int cmd_stat(int argc, char **argv, struct Input *in) {
     (void) in;
     if (argc < 2) {
         err_printf("usage: stat <path>...\n");
@@ -948,7 +949,7 @@ static int cmd_stat(int argc, char **argv, struct Input *in) {
 
 /* ================================ df / fsck ======================================== */
 
-static int cmd_df(int argc, char **argv, struct Input *in) {
+int cmd_df(int argc, char **argv, struct Input *in) {
     (void) argc;
     (void) argv;
     (void) in;
@@ -968,7 +969,7 @@ static int cmd_df(int argc, char **argv, struct Input *in) {
     return 0;
 }
 
-static int cmd_fsck(int argc, char **argv, struct Input *in) {
+int cmd_fsck(int argc, char **argv, struct Input *in) {
     (void) argc;
     (void) argv;
     (void) in;
@@ -979,82 +980,3 @@ static int cmd_fsck(int argc, char **argv, struct Input *in) {
     out_color(C_LIGHT_GRAY);
     return result.clean ? 0 : 1;
 }
-
-/* ================================ COMMAND TABLE ==================================== */
-
-int cmd_echo(int argc, char **argv, struct Input *in);
-int cmd_grep(int argc, char **argv, struct Input *in);
-int cmd_head(int argc, char **argv, struct Input *in);
-int cmd_tail(int argc, char **argv, struct Input *in);
-int cmd_wc(int argc, char **argv, struct Input *in);
-int cmd_sort(int argc, char **argv, struct Input *in);
-int cmd_hexdump(int argc, char **argv, struct Input *in);
-int cmd_write(int argc, char **argv, struct Input *in);
-int cmd_help(int argc, char **argv, struct Input *in);
-int cmd_clear(int argc, char **argv, struct Input *in);
-int cmd_history(int argc, char **argv, struct Input *in);
-int cmd_sh(int argc, char **argv, struct Input *in);
-int cmd_set(int argc, char **argv, struct Input *in);
-int cmd_unset(int argc, char **argv, struct Input *in);
-int cmd_exit(int argc, char **argv, struct Input *in);
-int cmd_true(int argc, char **argv, struct Input *in);
-int cmd_false(int argc, char **argv, struct Input *in);
-int cmd_date(int argc, char **argv, struct Input *in);
-int cmd_uptime(int argc, char **argv, struct Input *in);
-int cmd_sleep(int argc, char **argv, struct Input *in);
-int cmd_beep(int argc, char **argv, struct Input *in);
-int cmd_free(int argc, char **argv, struct Input *in);
-int cmd_heap(int argc, char **argv, struct Input *in);
-int cmd_memtest(int argc, char **argv, struct Input *in);
-int cmd_sysinfo(int argc, char **argv, struct Input *in);
-int cmd_crash(int argc, char **argv, struct Input *in);
-int cmd_reboot(int argc, char **argv, struct Input *in);
-int cmd_shutdown(int argc, char **argv, struct Input *in);
-
-const struct Command shell_commands[] = {
-    {"ls",       cmd_ls,       "[-l] [-a] [path]...",      "list a directory"},
-    {"cd",       cmd_cd,       "[path | -]",               "change the working directory (.. goes up)"},
-    {"pwd",      cmd_pwd,      "",                         "print the working directory"},
-    {"mkdir",    cmd_mkdir,    "[-p] <dir>...",            "create folders"},
-    {"touch",    cmd_touch,    "<file>...",                "create empty files"},
-    {"cat",      cmd_cat,      "[-n] [file]...",           "print files (or the pipeline input)"},
-    {"cp",       cmd_cp,       "[-r] <src>... <dst>",      "copy files, -r copies folders"},
-    {"rm",       cmd_rm,       "[-r] [-f] <path>...",      "remove files, -r removes folders"},
-    {"mv",       cmd_mv,       "<src>... <dst>",           "move / rename files and folders"},
-    {"find",     cmd_find,     "[dir] <name|pattern>",     "find by name in the whole file system"},
-    {"grep",     cmd_grep,     "[-ivncloFr] <regex> [file]...", "search lines (regular expressions)"},
-    {"tree",     cmd_tree,     "[path]",                   "show a directory tree"},
-    {"stat",     cmd_stat,     "<path>...",                "file details (inode, size, times)"},
-    {"echo",     cmd_echo,     "[-n] [text]...",           "print text"},
-    {"write",    cmd_write,    "<file> [text]...",         "write text (or the pipeline input) to a file"},
-    {"head",     cmd_head,     "[-n N] [file]...",         "first lines"},
-    {"tail",     cmd_tail,     "[-n N] [file]...",         "last lines"},
-    {"wc",       cmd_wc,       "[-lwc] [file]...",         "count lines, words and bytes"},
-    {"sort",     cmd_sort,     "[-r] [-n] [file]...",      "sort lines"},
-    {"hexdump",  cmd_hexdump,  "[file]",                   "hex + ASCII dump"},
-    {"sh",       cmd_sh,       "<script.sh> [args]...",    "run a shell script (also: ./x.sh, source)"},
-    {"source",   cmd_sh,       "<script.sh> [args]...",    "same as sh"},
-    {"set",      cmd_set,      "[NAME value]",             "list / set shell variables (also NAME=value)"},
-    {"unset",    cmd_unset,    "<NAME>...",                "remove shell variables"},
-    {"history",  cmd_history,  "",                         "previous commands (!! and !n repeat them)"},
-    {"clear",    cmd_clear,    "",                         "clear the screen"},
-    {"help",     cmd_help,     "[command]",                "this list"},
-    {"date",     cmd_date,     "",                         "current date and time (CMOS RTC)"},
-    {"uptime",   cmd_uptime,   "",                         "time since boot"},
-    {"sleep",    cmd_sleep,    "<ms>",                     "wait"},
-    {"beep",     cmd_beep,     "[Hz] [ms]",                "PC speaker"},
-    {"free",     cmd_free,     "",                         "physical memory, paging and swap"},
-    {"heap",     cmd_heap,     "[check]",                  "user and kernel heap statistics"},
-    {"memtest",  cmd_memtest,  "<MiB>",                    "allocate and verify memory (exercises swap)"},
-    {"sysinfo",  cmd_sysinfo,  "",                         "hardware and kernel summary"},
-    {"df",       cmd_df,       "",                         "file system usage"},
-    {"fsck",     cmd_fsck,     "",                         "check the file system"},
-    {"crash",    cmd_crash,    "[kernel|gpf|div]",         "fault on purpose (the kernel restarts the shell)"},
-    {"true",     cmd_true,     "",                         "exit status 0"},
-    {"false",    cmd_false,    "",                         "exit status 1"},
-    {"exit",     cmd_exit,     "[code]",                   "exit the shell (the kernel starts a new one)"},
-    {"reboot",   cmd_reboot,   "",                         "restart the machine"},
-    {"shutdown", cmd_shutdown, "",                         "power off"},
-};
-
-const uint32_t shell_command_count = sizeof(shell_commands) / sizeof(shell_commands[0]);

@@ -43,6 +43,7 @@
 #define KEY_PAGE_DOWN          ((char) 0x87)
 #define KEY_INSERT             ((char) 0x88)
 #define KEY_DELETE             ((char) 0x89)
+#define KEY_CTRL_C             ((char) 0x03)
 
 // Size of the key ring buffer (power of two)
 #define KEYBOARD_BUFFER_SIZE   64
@@ -98,6 +99,9 @@ void keyboard_state_deactivate(void);
 // Get keyboard buffer value and flush the buffer - @param buf Pointer to char buffer
 // Pops the oldest pending key, *buf = 0 when no key is pending (non-blocking)
 void get_keyboard_buffer(char *buf);
+
+// Whether a key is waiting in the buffer (without taking it)
+bool keyboard_has_input(void);
 
 // Blocking read: halt the CPU until a key is available and return it
 char keyboard_getchar(void);

@@ -6,6 +6,7 @@
 #include "header/graphics/graphics.h"
 #include "header/stdlib/string.h"
 #include "header/cpu/portio.h"
+#include "header/graphics/compositor.h"
 
 #define DEFAULT_ATTR         0x07
 #define MAKE_CELL(c, attr)   ((uint16_t) ((uint8_t) (c) | ((uint16_t) (attr) << 8)))
@@ -170,6 +171,7 @@ void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg)
     if (graphics_mode) {
         shadow_cells[row][col] = MAKE_CELL(c, attr);
         graphics_draw_cell(row, col);
+        compositor_after_console_draw(col * FONT_WIDTH, row * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT);
     } else {
         uint16_t offset = (uint16_t) ((row * FRAMEBUFFER_WIDTH + col) * 2);
         FRAMEBUFFER_MEMORY_OFFSET[offset]     = (uint8_t) c;
@@ -196,10 +198,12 @@ void framebuffer_set_cursor(uint8_t r, uint8_t c) {
     graphics_draw_cell(old_row, old_col);
     if (redraw_old)
         pointer_draw();
+    compositor_after_console_draw(old_col * FONT_WIDTH, old_row * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT);
     bool redraw_new = pointer_begin_cell_update(r, c);
     graphics_draw_cell(r, c);
     if (redraw_new)
         pointer_draw();
+    compositor_after_console_draw(c * FONT_WIDTH, r * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT);
 }
 
 void framebuffer_clear(void) {
@@ -211,6 +215,7 @@ void framebuffer_clear(void) {
                 shadow_cells[r][c] = MAKE_CELL(0, DEFAULT_ATTR);
         graphics_clear(graphics_vga_palette[0]);
         graphics_draw_cell(cursor_row, cursor_col);
+        compositor_after_console_draw(0, 0, graphics_get_width(), graphics_get_height());
     } else {
         for (uint8_t r = 0; r < FRAMEBUFFER_HEIGHT; r++)
             for (uint8_t c = 0; c < FRAMEBUFFER_WIDTH; c++)
@@ -299,6 +304,8 @@ void framebuffer_scroll_region(uint8_t top, uint8_t bottom, uint8_t bg) {
             shadow_cells[bottom - 1][c] = MAKE_CELL(' ', blank_attr);
         graphics_scroll_up(top * FONT_HEIGHT, bottom * FONT_HEIGHT, FONT_HEIGHT, graphics_vga_palette[bg & 0xF]);
         graphics_draw_cell(cursor_row, cursor_col);
+        // Windows stay where they are: put back whatever the scroll dragged over them
+        compositor_after_console_draw(0, top * FONT_HEIGHT, graphics_get_width(), (bottom - top) * FONT_HEIGHT);
     } else {
         volatile uint16_t *vram = text_vram();
         for (uint8_t r = top; r + 1 < bottom; r++)
@@ -335,6 +342,40 @@ void framebuffer_cursor_tick(uint32_t now_ms) {
     graphics_draw_cell(cursor_row, cursor_col);
     if (redraw)
         pointer_draw();
+    compositor_after_console_draw(cursor_col * FONT_WIDTH, cursor_row * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT);
+}
+
+/* -- Compositor support -- */
+
+void framebuffer_redraw_pixels(int x, int y, int w, int h) {
+    if (!graphics_mode || w <= 0 || h <= 0)
+        return;
+    int r0 = y / FONT_HEIGHT, r1 = (y + h - 1) / FONT_HEIGHT;
+    int c0 = x / FONT_WIDTH, c1 = (x + w - 1) / FONT_WIDTH;
+    if (r0 < 0) r0 = 0;
+    if (c0 < 0) c0 = 0;
+    if (r1 >= grid_rows) r1 = grid_rows - 1;
+    if (c1 >= grid_cols) c1 = grid_cols - 1;
+    bool had_pointer = pointer_drawn;
+    pointer_erase();
+    for (int r = r0; r <= r1; r++)
+        for (int c = c0; c <= c1; c++)
+            graphics_draw_cell((uint8_t) r, (uint8_t) c);
+    if (had_pointer)
+        pointer_draw();
+}
+
+bool framebuffer_pointer_hide_over(int x, int y, int w, int h) {
+    if (!pointer_drawn || !graphics_mode)
+        return false;
+    if (pointer_x >= x + w || pointer_x + POINTER_WIDTH <= x || pointer_y >= y + h || pointer_y + POINTER_HEIGHT <= y)
+        return false;
+    pointer_erase();
+    return true;
+}
+
+void framebuffer_pointer_show(void) {
+    pointer_draw();
 }
 
 void framebuffer_get_pointer_space(uint16_t *width, uint16_t *height) {

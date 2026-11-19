@@ -4,6 +4,7 @@
 #include "header/memory/paging.h"
 #include "header/driver/disk.h"
 #include "header/kernel/user.h"
+#include "header/process/process.h"
 
 struct SwapManager swap_manager;
 
@@ -151,6 +152,15 @@ bool handle_page_fault(uint32_t error_code) {
         stats.failed++;
         last_fault_oom = true; // RAM full and nothing could be swapped out
         return false;
+    }
+    // A page of a read-only section (.text / .rodata) stays read-only, except while the
+    // loader is still copying the program in
+    struct ProcessControlBlock *pcb = process_get_by_page_directory(page_dir);
+    bool loading = pcb != NULL && pcb->metadata.state == PROCESS_STATE_BLOCKED &&
+                   pcb->metadata.wait_reason == PROCESS_WAIT_NONE;
+    if (pcb != NULL && !loading && !process_page_is_writable(pcb, page)) {
+        *pte &= ~PTE_WRITABLE;
+        flush_single_tlb((void*) page);
     }
     stats.demand_zero++;
     return true;

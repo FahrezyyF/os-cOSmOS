@@ -5,20 +5,26 @@
 static volatile uint32_t timer_ticks = 0;
 static uint32_t timer_ms_per_tick    = 1;
 
+// Book 4.2.1.1, verbatim: PIT channel 0 in square wave mode at PIT_TIMER_FREQUENCY, IRQ0 unmasked
+void activate_timer_interrupt(void) {
+    __asm__ volatile("cli");
+    // Setup how often PIT fire
+    uint32_t pit_timer_counter_to_fire = PIT_TIMER_COUNTER;
+    out(PIT_COMMAND_REGISTER_PIO, PIT_COMMAND_VALUE);
+    out(PIT_CHANNEL_0_DATA_PIO, (uint8_t) (pit_timer_counter_to_fire & 0xFF));
+    out(PIT_CHANNEL_0_DATA_PIO, (uint8_t) ((pit_timer_counter_to_fire >> 8) & 0xFF));
+
+    // Activate the interrupt
+    out(PIC1_DATA, in(PIC1_DATA) & ~(1 << IRQ_TIMER));
+}
+
 void timer_init(uint32_t frequency_hz) {
-    if (frequency_hz == 0)
-        frequency_hz = TIMER_FREQUENCY_HZ;
-    uint32_t divisor = PIT_BASE_FREQUENCY / frequency_hz;
-    if (divisor > 0xFFFF)
-        divisor = 0xFFFF;
-    timer_ms_per_tick = 1000 / frequency_hz;
+    (void) frequency_hz; // the kernel tick is fixed at PIT_TIMER_FREQUENCY (1 tick = 1 ms)
+    timer_ms_per_tick = 1000 / PIT_TIMER_FREQUENCY;
     if (timer_ms_per_tick == 0)
         timer_ms_per_tick = 1;
-
-    out(PIT_COMMAND, 0x36); // Channel 0, lobyte/hibyte, mode 3 (square wave), binary
-    out(PIT_CHANNEL0_DATA, (uint8_t) (divisor & 0xFF));
-    out(PIT_CHANNEL0_DATA, (uint8_t) ((divisor >> 8) & 0xFF));
-    pic_unmask_irq(IRQ_TIMER);
+    activate_timer_interrupt();
+    __asm__ volatile("sti"); // activate_timer_interrupt() leaves interrupts off
 }
 
 void timer_isr(void) {

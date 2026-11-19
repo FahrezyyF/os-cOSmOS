@@ -5,6 +5,7 @@
 #include "header/memory/swap.h"
 #include "header/stdlib/string.h"
 #include "header/kernel-entrypoint.h"
+#include "header/process/process.h"
 
 _Static_assert(sizeof(struct PageDirectoryEntryFlag) == 1, "PDE flags are the low 8 bits");
 _Static_assert(sizeof(struct PageTableEntryFlag) == 1, "PTE flags are the low 8 bits");
@@ -29,6 +30,18 @@ __attribute__((aligned(0x1000))) struct PageTable _paging_kernel_page_table;
 
 // One page table inside the kernel image, used to reach the first physmap tables during init
 static __attribute__((aligned(0x1000))) struct PageTable bootstrap_table;
+
+/**
+ * Book 4.1.1: page directories of the processes. They live in the kernel image (higher
+ * half), so virtual - 0xC0000000 is their physical address for CR3.
+ */
+__attribute__((aligned(0x1000))) static struct PageDirectory page_directory_list[PAGING_DIRECTORY_TABLE_MAX_COUNT] = {0};
+
+static struct {
+    bool page_directory_used[PAGING_DIRECTORY_TABLE_MAX_COUNT];
+} page_directory_manager = {
+    .page_directory_used = {false},
+};
 
 /**
  * Global page frame manager state tracking free/busy frames.
@@ -79,7 +92,65 @@ void flush_single_tlb(void *virtual_addr) {
 struct PageDirectory *paging_get_current_page_directory_addr(void) {
     uint32_t current_page_directory_phys_addr;
     __asm__ volatile("mov %%cr3, %0" : "=r"(current_page_directory_phys_addr): /* <Empty> */);
-    return (struct PageDirectory*) PHYS_TO_VIRT(current_page_directory_phys_addr);
+    uint32_t virtual_addr_page_dir = current_page_directory_phys_addr + KERNEL_VIRTUAL_ADDRESS_BASE;
+    return (struct PageDirectory*) virtual_addr_page_dir;
+}
+
+void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr) {
+    uint32_t physical_addr_page_dir = (uint32_t) page_dir_virtual_addr;
+    // Additional layer of check & mistake safety net
+    if ((uint32_t) page_dir_virtual_addr > KERNEL_VIRTUAL_ADDRESS_BASE)
+        physical_addr_page_dir -= KERNEL_VIRTUAL_ADDRESS_BASE;
+    __asm__  volatile("mov %0, %%cr3" : /* <Empty> */ : "r"(physical_addr_page_dir): "memory");
+}
+
+struct PageDirectory* paging_create_new_page_directory(void) {
+    for (uint32_t i = 0; i < PAGING_DIRECTORY_TABLE_MAX_COUNT; i++) {
+        if (page_directory_manager.page_directory_used[i])
+            continue;
+        page_directory_manager.page_directory_used[i] = true;
+        struct PageDirectory *page_dir = &page_directory_list[i];
+        memset(page_dir, 0, sizeof(*page_dir));
+        // Kernel higher half. The kit installs one 4 MiB PDE at index 0x300; cOSmOS maps the
+        // kernel with 4 KiB page tables (image, physmap, kernel heap, LFB), so every kernel
+        // PDE (0x300 - 0x3FF) is copied. The tables themselves are shared by all processes.
+        uint32_t *src = (uint32_t*) _paging_kernel_page_directory.table;
+        uint32_t *dst = (uint32_t*) page_dir->table;
+        for (uint32_t pde = KERNEL_PDE_START; pde < PAGE_ENTRY_COUNT; pde++)
+            dst[pde] = src[pde];
+        return page_dir;
+    }
+    return NULL;
+}
+
+bool paging_free_page_directory(struct PageDirectory *page_dir) {
+    for (uint32_t i = 0; i < PAGING_DIRECTORY_TABLE_MAX_COUNT; i++) {
+        if (&page_directory_list[i] != page_dir || !page_directory_manager.page_directory_used[i])
+            continue;
+        if (paging_get_current_page_directory_addr() == page_dir)
+            paging_use_page_directory(&_paging_kernel_page_directory);
+        paging_free_user_space(page_dir); // user pages, swap slots and user page tables
+        memset(page_dir, 0, sizeof(*page_dir));
+        page_directory_manager.page_directory_used[i] = false;
+        return true;
+    }
+    return false;
+}
+
+uint32_t paging_page_directory_count_used(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < PAGING_DIRECTORY_TABLE_MAX_COUNT; i++)
+        n += page_directory_manager.page_directory_used[i] ? 1 : 0;
+    return n;
+}
+
+// A new kernel PDE (only paging_map_kernel_physical() creates one after boot) must reach
+// every process page directory too
+static void sync_kernel_pde(uint32_t pde_index) {
+    uint32_t value = ((uint32_t*) _paging_kernel_page_directory.table)[pde_index];
+    for (uint32_t i = 0; i < PAGING_DIRECTORY_TABLE_MAX_COUNT; i++)
+        if (page_directory_manager.page_directory_used[i])
+            ((uint32_t*) page_directory_list[i].table)[pde_index] = value;
 }
 
 uint32_t paging_kernel_image_frames(void) {
@@ -234,6 +305,13 @@ void paging_init(uint32_t detected_ram_kb) {
 
     address_space_count = 0;
     paging_register_address_space(&_paging_kernel_page_directory);
+
+    // CR0.WP: read-only user pages (.text / .rodata of CEX and ELF programs) are read-only
+    // for the kernel too, so a system call cannot be tricked into writing them
+    uint32_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= 0x10000u;
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
 }
 
 void paging_register_address_space(struct PageDirectory *page_dir) {
@@ -321,6 +399,7 @@ bool paging_map_kernel_physical(uint32_t virtual_addr, uint32_t physical_addr, u
                 return false;
             *pde = table_phys | PTE_PRESENT | PTE_WRITABLE;
             page_manager_state.page_table_count++;
+            sync_kernel_pde(PDE_INDEX(v));
         }
         raw_table(*pde)[PTE_INDEX(v)] = ((physical_addr + i * PAGE_FRAME_SIZE) & PTE_ADDRESS_MASK) | PTE_PRESENT | PTE_WRITABLE;
         flush_single_tlb((void*) v);
@@ -376,6 +455,7 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
     *pte = frame | PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_ACCESSED;
     flush_single_tlb((void*) page);
     page_manager_state.user_page_count++;
+    process_on_user_page_mapped(page_dir, page); // PCB page list (dynamic process size)
     return true;
 }
 
@@ -390,12 +470,15 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
         paging_frame_free(*pte & PTE_ADDRESS_MASK);
         page_manager_state.user_page_count--;
         *pte = 0;
-        flush_single_tlb((void*) page);
+        if (page_dir == paging_get_current_page_directory_addr())
+            flush_single_tlb((void*) page);
+        process_on_user_page_unmapped(page_dir, page);
         return true;
     }
     if (*pte & PTE_SWAPPED) {
         swap_release_slot(*pte >> 12);
         *pte = 0;
+        process_on_user_page_unmapped(page_dir, page);
         return true;
     }
     return false;
