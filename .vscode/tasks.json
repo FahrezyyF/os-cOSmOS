@@ -20,7 +20,7 @@
         {
             "type": "shell",
             "label": "Launch QEMU",
-            "command": "echo Starting QEMU&qemu-system-i386 -s -S -m 128M -vga std -drive file=storage.bin,format=raw,if=ide,index=0,media=disk -drive file=cosmo.bin,format=raw,if=ide,index=1,media=disk -cdrom OS2025.iso -serial file:serial.log",
+            "command": "echo Starting QEMU&qemu-system-i386 -s -S -m 128M -vga std -drive file=storage.bin,format=raw,if=ide,index=0,media=disk -drive file=cosmo.bin,format=raw,if=ide,index=1,media=disk -cdrom OS2025.iso -serial file:serial.log -netdev user,id=net0,hostfwd=udp::5555-:5555 -device rtl8139,netdev=net0",
             "isBackground": true,
             "dependsOn": "Build OS",
             "options": {

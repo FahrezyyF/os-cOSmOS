@@ -14,6 +14,235 @@ void exit(int code) {
     }
 }
 
+/* ================================ PROCESSES ======================================== */
+
+char **environ = NULL;
+
+const char *getenv(const char *name) {
+    size_t n = strlen(name);
+    for (char **e = environ; e != NULL && *e != NULL; e++)
+        if (strncmp(*e, name, n) == 0 && (*e)[n] == '=')
+            return *e + n + 1;
+    return NULL;
+}
+
+int32_t process_spawn(uint32_t parent, const char *name, uint8_t name_len, int argc, char **argv,
+                      int envc, char **envp, int32_t stdin_fd, int32_t stdout_fd, bool foreground) {
+    return process_spawn_ex(parent, name, name_len, argc, argv, envc, envp, stdin_fd, stdout_fd, foreground, false);
+}
+
+int32_t process_spawn_ex(uint32_t parent, const char *name, uint8_t name_len, int argc, char **argv,
+                         int envc, char **envp, int32_t stdin_fd, int32_t stdout_fd, bool foreground,
+                         bool require_header) {
+    struct SyscallExec ex = {
+        .parent_inode = parent,
+        .name         = name,
+        .name_len     = name_len,
+        .argc         = (uint32_t) argc,
+        .argv         = (const char *const *) argv,
+        .envc         = (uint32_t) envc,
+        .envp         = (const char *const *) envp,
+        .stdin_fd     = stdin_fd,
+        .stdout_fd    = stdout_fd,
+        .flags        = (foreground ? SYSCALL_EXEC_FOREGROUND : 0) | (require_header ? SYSCALL_EXEC_REQUIRE_HEADER : 0),
+        .priority     = 1,
+    };
+    int32_t result = -6;
+    syscall(SYS_PROCESS_CREATE, (uint32_t) &ex, (uint32_t) &result, 0);
+    return result;
+}
+
+const char *process_error_name(int32_t code) {
+    switch (-code) {
+        case 1:  return "too many processes";
+        case 2:  return "invalid entrypoint";
+        case 3:  return "not enough memory";
+        case 4:  return "cannot read the executable";
+        case 5:  return "not a valid executable (bad CEX / ELF header)";
+        case 6:  return "invalid arguments";
+        case 7:  return "not an executable";
+        default: return "unknown error";
+    }
+}
+
+int32_t process_wait(uint32_t pid, int32_t *status, bool nohang) {
+    struct SyscallWait w = {.pid = pid, .flags = nohang ? SYSCALL_WAIT_NOHANG : 0, .status = 0, .result = -1};
+    syscall(SYS_WAIT, (uint32_t) &w, 0, 0);
+    if (status != NULL)
+        *status = w.status;
+    return w.result;
+}
+
+int8_t process_kill(uint32_t pid) {
+    int8_t ret = 1;
+    syscall(SYS_PROCESS_KILL, pid, (uint32_t) &ret, 0);
+    return ret;
+}
+
+uint32_t process_list(struct SyscallProcessInfo *array, uint32_t max) {
+    uint32_t count = 0;
+    syscall(SYS_PROCESS_INFO, (uint32_t) array, max, (uint32_t) &count);
+    return count;
+}
+
+int8_t process_memory(struct SyscallProcessMemory *info) {
+    int8_t ret = 1;
+    syscall(SYS_PROCESS_MEMORY, (uint32_t) info, (uint32_t) &ret, 0);
+    return ret;
+}
+
+int8_t process_set_priority(uint32_t pid, uint8_t priority) {
+    int8_t ret = 1;
+    syscall(SYS_SET_PRIORITY, pid, priority, (uint32_t) &ret);
+    return ret;
+}
+
+uint32_t getpid(void) {
+    uint32_t pid = 0;
+    syscall(SYS_GETPID, (uint32_t) &pid, 0, 0);
+    return pid;
+}
+
+uint32_t getppid(void) {
+    uint32_t pid = 0, ppid = 0;
+    syscall(SYS_GETPID, (uint32_t) &pid, (uint32_t) &ppid, 0);
+    return ppid;
+}
+
+void yield(void) {
+    syscall(SYS_YIELD, 0, 0, 0);
+}
+
+void detach(void) {
+    syscall(SYS_DETACH, 0, 0, 0);
+}
+
+void sched_info(struct SyscallSchedInfo *info) {
+    syscall(SYS_SCHED_INFO, (uint32_t) info, 0, 0);
+}
+
+void widget_set(const char *text, uint8_t color) {
+    syscall(SYS_WIDGET_SET, (uint32_t) text, color, 0);
+}
+
+/* ================================ PRINTF ============================================ */
+
+static int vprintf_color(uint8_t color, const char *fmt, va_list ap) {
+    char buf[512];
+    va_list copy;
+    va_copy(copy, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n < 0) {
+        va_end(copy);
+        return n;
+    }
+    if ((uint32_t) n < sizeof(buf)) {
+        fd_write_all(1, buf, (uint32_t) n, color);
+    } else {
+        char *big = malloc((uint32_t) n + 1); // long output: no truncation
+        if (big != NULL) {
+            vsnprintf(big, (uint32_t) n + 1, fmt, copy);
+            fd_write_all(1, big, (uint32_t) n, color);
+            free(big);
+        }
+    }
+    va_end(copy);
+    return n;
+}
+
+int printf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vprintf_color(0, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+int printf_color(uint8_t color, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vprintf_color(color, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+/* ================================ FILE DESCRIPTORS ================================= */
+
+int8_t pipe_open(int32_t fds[2]) {
+    int8_t ret = 1;
+    syscall(SYS_PIPE, (uint32_t) fds, (uint32_t) &ret, 0);
+    return ret;
+}
+
+int32_t fd_read(int32_t fd, void *buf, uint32_t len) {
+    struct SyscallIO io = {.fd = fd, .buf = buf, .len = len, .color = 0, .result = -1};
+    syscall(SYS_FD_READ, (uint32_t) &io, 0, 0);
+    return io.result;
+}
+
+int32_t fd_write(int32_t fd, const void *buf, uint32_t len, uint8_t color) {
+    struct SyscallIO io = {.fd = fd, .buf = buf, .len = len, .color = color, .result = -1};
+    syscall(SYS_FD_WRITE, (uint32_t) &io, 0, 0);
+    return io.result;
+}
+
+bool fd_write_all(int32_t fd, const void *buf, uint32_t len, uint8_t color) {
+    const char *p = buf;
+    while (len > 0) {
+        int32_t n = fd_write(fd, p, len, color);
+        if (n <= 0)
+            return false;
+        p   += n;
+        len -= (uint32_t) n;
+    }
+    return true;
+}
+
+char *fd_read_all(int32_t fd, uint32_t *len) {
+    uint32_t cap = 4096, used = 0;
+    char *data = malloc(cap);
+    if (data == NULL)
+        return NULL;
+    for (;;) {
+        if (used + 1024 + 1 > cap) {
+            char *bigger = realloc(data, cap * 2);
+            if (bigger == NULL)
+                break;
+            data = bigger;
+            cap *= 2;
+        }
+        int32_t n = fd_read(fd, data + used, cap - used - 1);
+        if (n <= 0)
+            break;
+        used += (uint32_t) n;
+    }
+    data[used] = '\0';
+    *len = used;
+    return data;
+}
+
+void fd_close(int32_t fd) {
+    syscall(SYS_FD_CLOSE, (uint32_t) fd, 0, 0);
+}
+
+uint8_t fd_type(int32_t fd) {
+    uint8_t type = SYSCALL_FD_NONE;
+    syscall(SYS_FD_INFO, (uint32_t) fd, (uint32_t) &type, 0);
+    return type;
+}
+
+void chdir(const char *absolute_path, uint32_t inode) {
+    syscall(SYS_CHDIR, (uint32_t) absolute_path, inode, 0);
+}
+
+bool getcwd(char *buf, uint32_t size) {
+    if (size == 0)
+        return false;
+    buf[0] = '\0';
+    syscall(SYS_GETCWD, (uint32_t) buf, size, 0);
+    return buf[0] == '/';
+}
+
 /* ================================ CONSOLE ========================================== */
 
 char getchar_wait(void) {
@@ -426,4 +655,62 @@ void fs_info(struct SyscallFsInfo *info) {
 void fs_check(struct SyscallFsCheck *result) {
     memset(result, 0, sizeof(*result));
     syscall(SYS_FS_CHECK, (uint32_t) result, 0, 0);
+}
+
+/* ================================ NETWORK =========================================== */
+
+void net_info(struct SyscallNetInfo *info) {
+    memset(info, 0, sizeof(*info));
+    syscall(SYS_NET_INFO, (uint32_t) info, 0, 0);
+}
+
+int32_t udp_bind(uint16_t port) {
+    int32_t s = -1;
+    syscall(SYS_NET_UDP_BIND, port, (uint32_t) &s, 0);
+    return s;
+}
+
+int32_t udp_send(int32_t socket, const uint8_t ip[4], uint16_t port, const void *buf, uint32_t len) {
+    struct SyscallUdp u = {.socket = socket, .port = port, .buf = (void*) buf, .len = len, .result = -1};
+    memcpy(u.ip, ip, 4);
+    syscall(SYS_NET_UDP_SEND, (uint32_t) &u, 0, 0);
+    return u.result;
+}
+
+int32_t udp_recv(int32_t socket, uint8_t ip[4], uint16_t *port, void *buf, uint32_t len, uint32_t timeout_ms) {
+    struct SyscallUdp u = {.socket = socket, .buf = buf, .len = len, .timeout_ms = timeout_ms, .result = -1};
+    syscall(SYS_NET_UDP_RECV, (uint32_t) &u, 0, 0);
+    if (u.result >= 0) {
+        if (ip != NULL)
+            memcpy(ip, u.ip, 4);
+        if (port != NULL)
+            *port = u.port;
+    }
+    return u.result;
+}
+
+void udp_close(int32_t socket) {
+    syscall(SYS_NET_UDP_CLOSE, (uint32_t) socket, 0, 0);
+}
+
+int32_t net_ping(const uint8_t ip[4], uint16_t sequence, uint32_t timeout_ms) {
+    struct SyscallPing p = {.timeout_ms = timeout_ms, .sequence = sequence, .result = -1};
+    memcpy(p.ip, ip, 4);
+    syscall(SYS_NET_PING, (uint32_t) &p, 0, 0);
+    return p.result;
+}
+
+bool parse_ip(const char *s, uint8_t ip[4]) {
+    for (int i = 0; i < 4; i++) {
+        uint32_t v = 0;
+        int digits = 0;
+        while (*s >= '0' && *s <= '9' && digits < 4) {
+            v = v * 10 + (uint32_t) (*s++ - '0');
+            digits++;
+        }
+        if (digits == 0 || v > 255 || (i < 3 && *s++ != '.'))
+            return false;
+        ip[i] = (uint8_t) v;
+    }
+    return *s == '\0';
 }

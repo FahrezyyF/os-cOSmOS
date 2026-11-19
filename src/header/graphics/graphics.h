@@ -89,6 +89,9 @@ void graphics_scroll_up(int y_top, int y_bottom, int dy, uint32_t fill);
 void graphics_fill_circle(int cx, int cy, int r, uint32_t rgb);
 void graphics_draw_ellipse(int cx, int cy, int rx, int ry, uint32_t rgb, bool front_half_only);
 
+// Copy `count` pixels from `src` to row y starting at column x (clipped to the screen)
+void graphics_blit_row(int x, int y, const uint32_t *src, int count);
+
 // Linear interpolation between two RGB colors, t in [0, 255]
 uint32_t graphics_blend(uint32_t a, uint32_t b, uint8_t t);
 

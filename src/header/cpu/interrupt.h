@@ -74,8 +74,8 @@ struct CPURegister {
         uint32_t esi;
     } __attribute__((packed)) index;
     struct {
-        uint32_t esp;
-        uint32_t ebp;
+        uint32_t ebp; // Book 4.1.0 correction: pushad stores ebp below esp
+        uint32_t esp; // interprivilege interrupts: intsetup.s stores the user esp here
     } __attribute__((packed)) stack;
     struct {
         uint32_t ebx;

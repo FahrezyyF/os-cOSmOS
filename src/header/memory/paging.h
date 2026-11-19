@@ -222,8 +222,44 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
  */
 void flush_single_tlb(void *virtual_addr);
 
-// Physical address of the currently loaded page directory as a kernel virtual pointer
-struct PageDirectory *paging_get_current_page_directory_addr(void);
+/* --- Process-related Memory Management --- */
+#define PAGING_DIRECTORY_TABLE_MAX_COUNT 32
+
+/**
+ * Create new page directory prefilled with 1 page directory entry for kernel higher half mapping
+ * (cOSmOS: all kernel page directory entries, see paging.c)
+ *
+ * @return Pointer to page directory virtual address. Return NULL if allocation failed
+ */
+struct PageDirectory* paging_create_new_page_directory(void);
+
+/**
+ * Free page directory and delete all page directory entry
+ * (every user page, swap slot and user page table of it is released too)
+ *
+ * @param page_dir Pointer to page directory virtual address
+ * @return         True if free operation success
+ */
+bool paging_free_page_directory(struct PageDirectory *page_dir);
+
+/**
+ * Get currently active page directory virtual address from CR3 register
+ *
+ * @note   Assuming page directories lives in kernel memory
+ * @return Page directory virtual address currently active (CR3)
+ */
+struct PageDirectory* paging_get_current_page_directory_addr(void);
+
+/**
+ * Change active page directory (indirectly trigger TLB flush for all non-global entry)
+ *
+ * @note                        Assuming page directories lives in kernel memory
+ * @param page_dir_virtual_addr Page directory virtual address to switch into
+ */
+void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr);
+
+// Page directories of page_directory_list in use
+uint32_t paging_page_directory_count_used(void);
 
 
 

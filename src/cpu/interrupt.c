@@ -8,6 +8,8 @@
 #include "header/kernel/user.h"
 #include "header/memory/paging.h"
 #include "header/memory/swap.h"
+#include "header/process/scheduler.h"
+#include "header/net/net.h"
 
 struct TSSEntry _interrupt_tss_entry = {
     .ss0  = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
@@ -90,7 +92,8 @@ void main_interrupt_handler(struct InterruptFrame frame) {
 
     switch (frame.int_number) {
         case PIC1_OFFSET + IRQ_TIMER:
-            timer_isr();
+            timer_isr();                // ticks + PIC ACK
+            scheduler_on_timer(&frame); // CPU accounting, time slice (book 4.2.1.1)
             break;
         case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
@@ -103,10 +106,16 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             break;
         default:
             // Spurious / unexpected IRQ: still ACK so the PIC does not stall
-            if (frame.int_number >= PIC1_OFFSET && frame.int_number < PIC2_OFFSET + 8)
-                pic_ack((uint8_t) (frame.int_number - PIC1_OFFSET));
+            if (frame.int_number >= PIC1_OFFSET && frame.int_number < PIC2_OFFSET + 8) {
+                uint8_t irq = (uint8_t) (frame.int_number - PIC1_OFFSET);
+                if (!net_handle_irq(irq)) // the network card's IRQ line is assigned by PCI
+                    pic_ack(irq);
+            }
             break;
     }
+    // Back to ring 3: context switch when the slice is over, a woken process should run,
+    // or the current process was killed (Ctrl+C) while it was inside the kernel
+    scheduler_on_return_to_user(&frame);
 }
 
 void activate_keyboard_interrupt(void) {

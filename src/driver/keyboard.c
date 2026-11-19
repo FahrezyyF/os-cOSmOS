@@ -1,3 +1,5 @@
+#include "header/process/process.h"
+#include "header/graphics/compositor.h"
 #include "header/driver/keyboard.h"
 #include "header/cpu/portio.h"
 #include "header/stdlib/string.h"
@@ -115,6 +117,13 @@ void keyboard_isr(void) {
         default:
             if (!released && keyboard_state.keyboard_input_on) {
                 char c = extended ? translate_extended(code) : translate_regular(code);
+                // Ctrl+C ends the foreground program (book: programs stop "responsively");
+                // the shell itself receives it as a key. A focused window gets its keys
+                // through the compositor instead of the console buffer.
+                if (c != 0 && compositor_key_hook(c))
+                    c = 0;
+                if (c == KEY_CTRL_C && process_keyboard_interrupt())
+                    c = 0;
                 if (c != 0)
                     keyboard_buffer_push(c);
             }
@@ -149,6 +158,10 @@ char keyboard_getchar(void) {
             return c;
         __asm__ volatile("hlt");
     }
+}
+
+bool keyboard_has_input(void) {
+    return keyboard_state.buffer_head != keyboard_state.buffer_tail;
 }
 
 bool keyboard_is_ctrl_pressed(void) {
