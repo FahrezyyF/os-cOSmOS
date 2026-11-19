@@ -304,8 +304,9 @@ void framebuffer_scroll_region(uint8_t top, uint8_t bottom, uint8_t bg) {
             shadow_cells[bottom - 1][c] = MAKE_CELL(' ', blank_attr);
         graphics_scroll_up(top * FONT_HEIGHT, bottom * FONT_HEIGHT, FONT_HEIGHT, graphics_vga_palette[bg & 0xF]);
         graphics_draw_cell(cursor_row, cursor_col);
-        // Windows stay where they are: put back whatever the scroll dragged over them
-        compositor_after_console_draw(0, top * FONT_HEIGHT, graphics_get_width(), (bottom - top) * FONT_HEIGHT);
+        // Windows stay where they are: clean up the window pixels the scroll dragged upwards
+        // and paint the windows back
+        compositor_after_console_scroll(top * FONT_HEIGHT, bottom * FONT_HEIGHT, FONT_HEIGHT);
     } else {
         volatile uint16_t *vram = text_vram();
         for (uint8_t r = top; r + 1 < bottom; r++)

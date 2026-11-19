@@ -31,6 +31,9 @@ bool compositor_has_keyboard_focus(void);
 // Keyboard ISR hook: a focused window takes the key. @return true when consumed
 bool compositor_key_hook(char c);
 
+// Keyboard ISR hook for every key press / release (scancode set 1), for games
+void compositor_raw_key_hook(uint8_t scancode, bool extended, bool released);
+
 // A window of this process has a pending event (wakes PROCESS_WAIT_WINDOW)
 bool compositor_has_event(uint32_t pid);
 
@@ -51,6 +54,9 @@ void compositor_tick(uint32_t now_ms);
  * Called by the framebuffer driver after every cell / scroll / clear in graphics mode.
  */
 void compositor_after_console_draw(int x, int y, int w, int h);
+
+// The console scrolled the pixel rows [y_top, y_bottom) up by dy
+void compositor_after_console_scroll(int y_top, int y_bottom, int dy);
 
 // SYS_WIN_* dispatcher
 void compositor_syscall(const struct InterruptFrame *frame, uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);

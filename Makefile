@@ -65,6 +65,7 @@ USER_OBJ_FOLDER    = $(OBJ_FOLDER)/user
 STAGE_FOLDER       = $(OUTPUT_FOLDER)/rootfs
 USER_CRT0          = $(USER_OBJ_FOLDER)/user/crt0.s.o
 USER_LIB_SOURCES   = $(SOURCE_FOLDER)/user/ulib.c $(SOURCE_FOLDER)/user/regex.c $(SOURCE_FOLDER)/user/gfx.c $(SOURCE_FOLDER)/text/font8x16.c \
+                     $(SOURCE_FOLDER)/user/inflate.c \
                      $(SOURCE_FOLDER)/stdlib/string.c $(SOURCE_FOLDER)/stdlib/format.c $(SOURCE_FOLDER)/stdlib/heap.c
 USER_SHLIB_SOURCES = $(SOURCE_FOLDER)/user/shlib.c $(SOURCE_FOLDER)/user/cmd_fs.c $(SOURCE_FOLDER)/user/cmd_text.c \
                      $(SOURCE_FOLDER)/user/cmd_sys.c $(SOURCE_FOLDER)/user/cmd_proc.c
@@ -86,9 +87,22 @@ APPS         = hello clock counter top paint bounce gclock ifconfig ping nslooku
 GAMES        = snake
 BIN_TARGETS  = $(addprefix $(STAGE_FOLDER)/bin/,$(BIN_COMMANDS))
 APP_TARGETS  = $(addprefix $(STAGE_FOLDER)/apps/,$(APPS)) $(STAGE_FOLDER)/apps/hello-flat
-GAME_TARGETS = $(addprefix $(STAGE_FOLDER)/games/,$(GAMES))
-# /media: CVID videos for vplay (a generated demo clip; `make video VIDEO=file.mp4` adds yours)
-MEDIA_TARGETS = $(STAGE_FOLDER)/media/demo.cvid
+GAME_TARGETS = $(addprefix $(STAGE_FOLDER)/games/,$(GAMES)) $(STAGE_FOLDER)/games/doom
+
+# DOOM (bonus): doomgeneric (GPL-2.0, src/user/doom) on the small hosted C library in
+# src/user/libc. Third-party code: compiled with its own flags and without -Werror.
+GCC_INCLUDE   := $(shell $(CC) -print-file-name=include)
+DOOM_SOURCES  := $(sort $(wildcard $(SOURCE_FOLDER)/user/doom/*.c)) $(SOURCE_FOLDER)/user/libc/libc.c
+DOOM_OBJECTS  := $(patsubst $(SOURCE_FOLDER)/%.c,$(OBJ_FOLDER)/doom/%.o,$(DOOM_SOURCES))
+DOOM_CFLAGS   = -m32 -c -g -O2 -fno-pie -ffreestanding -fno-stack-protector -fno-strict-aliasing -nostdinc \
+                -isystem $(SOURCE_FOLDER)/user/libc/include -isystem $(GCC_INCLUDE) -I$(SOURCE_FOLDER) \
+                -I$(SOURCE_FOLDER)/user/doom -ffunction-sections -fdata-sections -MMD -MP -w \
+                -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200
+# /media and /games data: a generated demo clip, and the compressed (CZIP) assets in assets/:
+# Bad Apple!! for vplay and the DOOM shareware WAD (see `make video` and assets/README.md)
+# (the procedural demo clip is built with `make demo-video`; it is left off the disk by default
+#  because the 4 MiB root is almost full with Bad Apple!! and DOOM)
+MEDIA_TARGETS = $(STAGE_FOLDER)/media/badapple.cvid $(STAGE_FOLDER)/games/doom1.wad
 USER_PROGRAMS = $(OUTPUT_FOLDER)/shell $(BIN_TARGETS) $(APP_TARGETS) $(GAME_TARGETS) $(MEDIA_TARGETS)
 
 # QEMU: storage.bin (EXT2) = primary master, cosmo.bin (CosmoFS) = primary slave
@@ -101,7 +115,7 @@ QEMU_FLAGS    = -m $(QEMU_MEMORY) -vga std $(QEMU_DRIVES) -cdrom $(OUTPUT_FOLDER
 QEMU_SOUND    = -audiodev pa,id=snd0 -machine pcspk-audiodev=snd0
 
 .PHONY: all build run run-sound debug clean kernel iso disk disks inserter cosmofs-tool tools test \
-        user-shell user-programs insert-shell insert-samples video FORCE
+        user-shell user-programs insert-shell insert-samples video demo-video FORCE
 
 all: build
 build: iso
@@ -231,26 +245,46 @@ $(STAGE_FOLDER)/games/%: $(USER_OBJ_FOLDER)/elf/%.elf $(ELF2CEX)
 	@mkdir -p $(dir $@)
 	@$(ELF2CEX) $< $@ $* > /dev/null
 
+$(OBJ_FOLDER)/doom/%.o: $(SOURCE_FOLDER)/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(DOOM_CFLAGS) $< -o $@
+
+$(USER_OBJ_FOLDER)/elf/doom.elf: $(DOOM_OBJECTS) $(USER_CRT0) $(USER_LIB) $(SOURCE_FOLDER)/user-linker.ld
+	@mkdir -p $(dir $@)
+	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld $(USER_LDFLAGS) $(USER_CRT0) $(DOOM_OBJECTS) $(USER_LIB) -o $@
+
 # The same hello as a flat binary (third format of the loader, book chapter 3 style)
 $(STAGE_FOLDER)/apps/hello-flat: $(USER_OBJ_FOLDER)/user/apps/hello.o $(USER_CRT0) $(USER_LIB) $(SOURCE_FOLDER)/user-linker-flat.ld
 	@mkdir -p $(dir $@)
 	@$(LIN) -T $(SOURCE_FOLDER)/user-linker-flat.ld -melf_i386 -z noexecstack --gc-sections --oformat=binary \
 		$(USER_CRT0) $< $(USER_LIB) -o $@
 
-$(STAGE_FOLDER)/media/demo.cvid: tools/video2cvid.py
+$(STAGE_FOLDER)/media/demo.cvid: tools/video2cvid.py tools/czip.py
 	@mkdir -p $(dir $@)
-	@python3 tools/video2cvid.py --demo $@ > /dev/null
+	@python3 tools/video2cvid.py --demo $@.raw > /dev/null
+	@python3 tools/czip.py $@.raw $@ > /dev/null
+	@rm -f $@.raw
 
-# Bonus "Bad Apple!!": convert a video you provide (needs ffmpeg on the host), then
-# `make insert-shell` / `make run` copies it to /media; play it with `vplay /media/<name>.cvid`
-#   make video VIDEO=~/bad_apple.mp4 [VIDEO_NAME=badapple] [VIDEO_SIZE=160x120] [VIDEO_FPS=30]
-VIDEO_NAME ?= badapple
-VIDEO_SIZE ?= 160x120
-VIDEO_FPS  ?= 30
+demo-video: $(STAGE_FOLDER)/media/demo.cvid
+
+$(STAGE_FOLDER)/media/badapple.cvid: assets/badapple.cvid
+	@mkdir -p $(dir $@)
+	@cp $< $@
+
+$(STAGE_FOLDER)/games/doom1.wad: assets/doom1.wad
+	@mkdir -p $(dir $@)
+	@cp $< $@
+
+# Bonus "Bad Apple!!": regenerate assets/badapple.cvid from a video file (needs ffmpeg on
+# PATH or FFMPEG=/path/to/ffmpeg): 128x96, 24 fps, CZIP-compressed so it fits the 4 MiB root
+#   make video VIDEO=~/bad_apple.mp4 [VIDEO_SIZE=128x96] [VIDEO_FPS=24]
+VIDEO_SIZE ?= 128x96
+VIDEO_FPS  ?= 24
 video:
 	@test -n "$(VIDEO)" || (echo "usage: make video VIDEO=path/to/video.mp4" && false)
-	@mkdir -p $(STAGE_FOLDER)/media
-	@python3 tools/video2cvid.py "$(VIDEO)" $(STAGE_FOLDER)/media/$(VIDEO_NAME).cvid --size $(VIDEO_SIZE) --fps $(VIDEO_FPS)
+	@python3 tools/video2cvid.py "$(VIDEO)" assets/badapple.cvid.raw --size $(VIDEO_SIZE) --fps $(VIDEO_FPS)
+	@python3 tools/czip.py assets/badapple.cvid.raw assets/badapple.cvid
+	@rm -f assets/badapple.cvid.raw
 
 $(USER_OBJ_FOLDER)/%.o: $(SOURCE_FOLDER)/%.c
 	@mkdir -p $(dir $@)
@@ -287,7 +321,7 @@ insert-samples: inserter cosmofs-tool disks
 # Host unit/integration tests, run with AddressSanitizer + UBSan
 TEST_PROGRAMS = $(OUTPUT_FOLDER)/test-string $(OUTPUT_FOLDER)/test-format $(OUTPUT_FOLDER)/test-heap \
                 $(OUTPUT_FOLDER)/test-regex $(OUTPUT_FOLDER)/test-ext2 $(OUTPUT_FOLDER)/test-cosmofs \
-                $(OUTPUT_FOLDER)/test-pipe $(OUTPUT_FOLDER)/test-cex
+                $(OUTPUT_FOLDER)/test-pipe $(OUTPUT_FOLDER)/test-cex $(OUTPUT_FOLDER)/test-inflate
 
 # The kernel's string.c / format.c are compiled with k_ prefixed symbols so the tests can
 # compare them against glibc without symbol clashes
@@ -320,10 +354,13 @@ $(OUTPUT_FOLDER)/test-pipe: $(TEST_FOLDER)/test_pipe.c $(SOURCE_FOLDER)/process/
 $(OUTPUT_FOLDER)/test-cex: $(TEST_FOLDER)/test_cex.c $(SOURCE_FOLDER)/process/exec.c $(OUTPUT_FOLDER)/shell
 	@$(HOSTCC) $(HOST_CFLAGS) $(SANITIZE) $(TEST_FOLDER)/test_cex.c $(SOURCE_FOLDER)/process/exec.c -o $@
 
+$(OUTPUT_FOLDER)/test-inflate: $(TEST_FOLDER)/test_inflate.c $(SOURCE_FOLDER)/user/inflate.c
+	@$(HOSTCC) $(HOST_CFLAGS) $(SANITIZE) $^ -lz -o $@
+
 test: $(TEST_PROGRAMS)
 	@for t in $(TEST_PROGRAMS); do echo "== $$t"; ./$$t || exit 1; done
 	@echo "All host tests passed."
 
 FORCE:
 
--include $(KERNEL_OBJECTS:.o=.d) $(USER_OBJECTS:.o=.d)
+-include $(KERNEL_OBJECTS:.o=.d) $(USER_OBJECTS:.o=.d) $(DOOM_OBJECTS:.o=.d)
